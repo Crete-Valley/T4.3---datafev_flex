@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>datafev_flex Service Flowchart</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes pulse-soft {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        .animate-pulse-soft {
+            animation: pulse-soft 2.5s infinite;
+        }
+        .flow-stage,
+        .flow-stage * {
+            overflow-wrap: anywhere;
+        }
+        .flow-stage .grid > div {
+            min-width: 0;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-slate-950 via-blue-950 to-slate-900 min-h-screen p-4 md:p-8">
+    <div class="max-w-7xl mx-auto">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl md:text-4xl font-bold text-white mb-2">
+                datafev_flex Service Flowchart
+            </h1>
+            <p class="text-blue-200">Stage-1 + Stage-2 (Strict / Best-Effort) + Tracking Analytics</p>
+        </div>
+
+        <div class="flex flex-col items-center space-y-6">
+            <div class="flow-stage bg-gradient-to-r from-emerald-500 to-green-600 rounded-xl p-5 md:p-6 shadow-2xl w-full max-w-4xl border-2 border-emerald-300">
+                <div class="flex items-center gap-3 mb-3">
+                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7h18M3 12h18M3 17h18"/>
+                    </svg>
+                    <h2 class="text-xl md:text-2xl font-bold text-white leading-tight">ENTRYPOINTS & RUNTIME MODES</h2>
+                </div>
+                <div class="bg-white/10 rounded-lg p-4 backdrop-blur grid md:grid-cols-2 gap-4">
+                    <div class="bg-emerald-900/30 rounded p-3 border border-emerald-400/30">
+                        <p class="text-emerald-200 font-semibold mb-1">Local (No Docker)</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- `python run_local_workflow.py`</li>
+                            <li>- Stage-1 + Stage-2 single-process run</li>
+                            <li>- Manual tuning of solver/profile/exports</li>
+                        </ul>
+                    </div>
+                    <div class="bg-green-900/30 rounded p-3 border border-green-400/30">
+                        <p class="text-green-200 font-semibold mb-1">HTTP Service (FastAPI)</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- `POST /v1/flex-potential-estimation`</li>
+                            <li>- `POST /v1/flex-aware-smart-charge-scheduling`</li>
+                            <li>- `GET /healthz`, `GET /readyz`</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-col items-center">
+                <div class="w-1 h-12 bg-gradient-to-b from-green-400 to-purple-400"></div>
+                <div class="w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-purple-400"></div>
+            </div>
+
+            <div class="flow-stage bg-gradient-to-r from-purple-600 to-indigo-600 rounded-xl p-5 md:p-6 shadow-2xl w-full max-w-4xl border-2 border-purple-300">
+                <div class="flex items-center gap-3 mb-3">
+                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 12h16M4 17h16"/>
+                    </svg>
+                    <h2 class="text-xl md:text-2xl font-bold text-white leading-tight">STAGE-1 FLEX POTENTIAL ESTIMATION</h2>
+                </div>
+                <div class="bg-white/10 rounded-lg p-4 backdrop-blur grid md:grid-cols-2 gap-4">
+                    <div class="bg-purple-900/30 rounded p-3 border border-purple-400/30">
+                        <p class="text-purple-200 font-semibold mb-1">Input + Parsing</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- `Planning`, `Fleet`, `Clusters` sheets</li>
+                            <li>- Horizon: `planning_start/end`, `time_step_minutes`</li>
+                            <li>- Build `EVFleet` + `MultiClusterSystem`</li>
+                        </ul>
+                    </div>
+                    <div class="bg-indigo-900/30 rounded p-3 border border-indigo-400/30">
+                        <p class="text-indigo-200 font-semibold mb-1">MILP Outputs</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- G2V envelope (downward capability)</li>
+                            <li>- V2G envelope (upward capability)</li>
+                            <li>- Per-cluster capability time-series</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-col items-center">
+                <div class="w-1 h-12 bg-gradient-to-b from-indigo-400 to-orange-400"></div>
+                <div class="w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-orange-400"></div>
+            </div>
+
+            <div class="flow-stage bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl p-5 md:p-6 shadow-2xl w-full max-w-4xl border-2 border-orange-300">
+                <div class="flex items-center gap-3 mb-3">
+                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    <h2 class="text-xl md:text-2xl font-bold text-white leading-tight">STAGE-1 CACHE + JOB WORKSPACE</h2>
+                </div>
+                <div class="bg-white/10 rounded-lg p-4 backdrop-blur grid md:grid-cols-2 gap-4">
+                    <div class="bg-orange-900/30 rounded p-3 border border-orange-400/30">
+                        <p class="text-orange-200 font-semibold mb-1">Cache Contract</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- Return `stage1_id` to client</li>
+                            <li>- TTL cache keeps Stage-1 artifacts</li>
+                            <li>- After successful Stage-2: cache entry removed</li>
+                        </ul>
+                    </div>
+                    <div class="bg-amber-900/30 rounded p-3 border border-amber-400/30">
+                        <p class="text-amber-200 font-semibold mb-1">Artifacts</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- `outputs/jobs/&lt;stage1_id&gt;/flex_potential_estimation`</li>
+                            <li>- Capability files + plots</li>
+                            <li>- Request-scoped result isolation</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-col items-center">
+                <div class="w-1 h-12 bg-gradient-to-b from-amber-400 to-orange-400"></div>
+                <div class="w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-orange-400"></div>
+            </div>
+
+            <div class="flow-stage bg-gradient-to-r from-orange-500 to-red-500 rounded-xl p-5 md:p-6 shadow-2xl w-full max-w-4xl border-2 border-orange-300">
+                <div class="flex items-center gap-3 mb-3">
+                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+                    </svg>
+                    <h2 class="text-xl md:text-2xl font-bold text-white leading-tight">EXTERNAL SERVICE</h2>
+                </div>
+                <div class="bg-white/10 rounded-lg p-4 backdrop-blur grid md:grid-cols-2 gap-4">
+                    <div class="bg-orange-900/30 rounded p-3 border border-orange-400/30">
+                        <p class="text-orange-200 font-semibold mb-1">Service Communication</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- Send Stage-1 G2V/V2G capabilities</li>
+                            <li>- Share `stage1_id` for request traceability</li>
+                            <li>- Receive commands for Stage-2 scheduling</li>
+                        </ul>
+                    </div>
+                    <div class="bg-red-900/30 rounded p-3 border border-red-400/30">
+                        <p class="text-red-200 font-semibold mb-1">Command Payloads</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- `absolute_setpoint` (`p_set_kw`)</li>
+                            <li>- `flex_band` (`p_min_kw`, `p_max_kw`)</li>
+                            <li>- JSON inline or XLSX upload formats</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-col items-center">
+                <div class="w-1 h-12 bg-gradient-to-b from-red-400 to-rose-400"></div>
+                <div class="w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-rose-400"></div>
+            </div>
+
+            <div class="flow-stage bg-gradient-to-r from-rose-600 to-red-600 rounded-xl p-5 md:p-6 shadow-2xl w-full max-w-5xl border-2 border-rose-300">
+                <div class="flex items-center gap-3 mb-3">
+                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                    </svg>
+                    <h2 class="text-xl md:text-2xl font-bold text-white leading-tight">STAGE-2 COMMAND INTAKE + VALIDATION GATE</h2>
+                </div>
+                <div class="bg-white/10 rounded-lg p-4 backdrop-blur grid md:grid-cols-3 gap-4">
+                    <div class="bg-rose-900/30 rounded p-3 border border-rose-400/30">
+                        <p class="text-rose-200 font-semibold mb-1">Command Types</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- `absolute_setpoint` (`p_set_kw`)</li>
+                            <li>- `flex_band` (`p_min_kw`, `p_max_kw`)</li>
+                            <li>- JSON inline or XLSX upload</li>
+                        </ul>
+                    </div>
+                    <div class="bg-red-900/30 rounded p-3 border border-red-400/30">
+                        <p class="text-red-200 font-semibold mb-1">Tracking Modes</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- `strict` (default): envelope enforced</li>
+                            <li>- `best_effort`: envelope soften + minimize mismatch</li>
+                            <li>- `match_tolerance_kw` for `is_met` decision</li>
+                        </ul>
+                    </div>
+                    <div class="bg-orange-900/30 rounded p-3 border border-orange-400/30">
+                        <p class="text-orange-200 font-semibold mb-1">Validation Outcomes</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- `TIMESTEP_MISMATCH`, `UNKNOWN_CLUSTER`</li>
+                            <li>- `OUT_OF_ENVELOPE`, `INVALID_BAND_RANGE`</li>
+                            <li>- `INFEASIBLE_MILP`, `BEST_EFFORT_DEVIATION`</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-col items-center">
+                <div class="w-1 h-12 bg-gradient-to-b from-red-400 to-cyan-400"></div>
+                <div class="w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-cyan-400"></div>
+            </div>
+
+            <div class="flow-stage bg-gradient-to-r from-cyan-600 to-blue-600 rounded-xl p-5 md:p-6 shadow-2xl w-full max-w-5xl border-2 border-cyan-300">
+                <div class="flex items-center gap-3 mb-3">
+                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 3v3m4.5-3v3M4.5 9h15M5.25 6.75h13.5A2.25 2.25 0 0121 9v9.75A2.25 2.25 0 0118.75 21H5.25A2.25 2.25 0 013 18.75V9a2.25 2.25 0 012.25-2.25z"/>
+                    </svg>
+                    <h2 class="text-xl md:text-2xl font-bold text-white leading-tight">STAGE-2 MILP SCHEDULER + TRACKING ANALYTICS</h2>
+                </div>
+                <div class="bg-white/10 rounded-lg p-4 backdrop-blur grid md:grid-cols-2 gap-4">
+                    <div class="bg-cyan-900/30 rounded p-3 border border-cyan-400/30">
+                        <p class="text-cyan-200 font-semibold mb-2">Hard Constraints</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- EV arrival/departure windows</li>
+                            <li>- SoC dynamics + min/max SoC</li>
+                            <li>- Target SoC policy (`use_target_soc`, `exact_target_soc`)</li>
+                            <li>- Charge/discharge power limits</li>
+                        </ul>
+                        <p class="text-cyan-100 text-xs mt-2">These remain hard in both `strict` and `best_effort`.</p>
+                    </div>
+                    <div class="bg-blue-900/30 rounded p-3 border border-blue-400/30">
+                        <p class="text-blue-200 font-semibold mb-2">Tracking KPIs per Timestamp</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- `datetime`</li>
+                            <li>- requested (`p_set` or `p_min/p_max`)</li>
+                            <li>- `delivered_p_kw`</li>
+                            <li>- error (`abs_error_kw` or `band_violation_kw`)</li>
+                            <li>- `is_met` (true/false)</li>
+                        </ul>
+                        <p class="text-blue-100 text-xs mt-2">Summary: matched_steps, total_steps, match_ratio, mean/max error.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-col items-center">
+                <div class="w-1 h-12 bg-gradient-to-b from-blue-400 to-teal-400"></div>
+                <div class="w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-teal-400"></div>
+            </div>
+
+            <div class="flow-stage bg-gradient-to-r from-teal-600 to-emerald-600 rounded-xl p-5 md:p-6 shadow-2xl w-full max-w-5xl border-2 border-teal-300">
+                <div class="flex items-center gap-3 mb-3">
+                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7.5A2.5 2.5 0 015.5 5h13A2.5 2.5 0 0121 7.5v9A2.5 2.5 0 0118.5 19h-13A2.5 2.5 0 013 16.5v-9z"/>
+                    </svg>
+                    <h2 class="text-xl md:text-2xl font-bold text-white leading-tight">OUTPUTS, EXPORTS, AND OPERATIONS</h2>
+                </div>
+                <div class="bg-white/10 rounded-lg p-4 backdrop-blur grid md:grid-cols-2 gap-4">
+                    <div class="bg-teal-900/30 rounded p-3 border border-teal-400/30">
+                        <p class="text-teal-200 font-semibold mb-1">Primary Exports</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- Stage-1 capability CSV/XLSX/Parquet</li>
+                            <li>- Stage-2 scheduling XLSX/CSV</li>
+                            <li>- Stage-2 tracking report per cluster</li>
+                        </ul>
+                    </div>
+                    <div class="bg-emerald-900/30 rounded p-3 border border-emerald-400/30">
+                        <p class="text-emerald-200 font-semibold mb-1">Artifacts by Job</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- `outputs/jobs/&lt;id&gt;/flex_potential_estimation`</li>
+                            <li>- `outputs/jobs/&lt;id&gt;/flex_aware_smart_charge_scheduling`</li>
+                            <li>- Deterministic acceptance fixtures available</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-col items-center py-4">
+                <p class="text-emerald-200 mt-2 font-semibold animate-pulse-soft">Service Ready: strict + best_effort scheduling with full traceability</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

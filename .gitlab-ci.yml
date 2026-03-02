@@ -1,0 +1,39 @@
+stages:
+  - test
+  - smoke
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+pytest:
+  stage: test
+  image: python:3.12
+  cache:
+    paths:
+      - .cache/pip
+  script:
+    - python -V
+    - pip install --upgrade pip
+    - pip install -r requirements-test.txt
+    - pytest -q
+
+docker_smoke:
+  stage: smoke
+  image: docker:27
+  services:
+    - name: docker:27-dind
+      command: ["--tls=false"]
+  variables:
+    DOCKER_HOST: "tcp://docker:2375"
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - apk add --no-cache bash curl python3
+  script:
+    - export USER_ID="$(id -u)"
+    - export GROUP_ID="$(id -g)"
+    - docker compose build --no-cache
+    - docker compose up -d
+    - bash scripts/smoke_api.sh
+  after_script:
+    - docker compose logs --tail=200 || true
+    - docker compose down -v || true

@@ -1,0 +1,11 @@
+file_name,stage,command_type,expected_result,description
+stage1_baseline_multi_cluster.xlsx,stage1,-,SUCCESS,Baseline multi-cluster input mirrored from sample file.
+stage1_single_cluster_short_horizon.xlsx,stage1,-,SUCCESS,Single-cluster and short horizon variant.
+stage1_no_v2g_cluster2.xlsx,stage1,-,SUCCESS,Cluster 2 has zero discharge capability (no V2G).
+stage2_absolute_accept_baseline.xlsx,stage2,absolute_setpoint,ACCEPT_OR_EXPLICIT_REJECTION,Baseline absolute commands for normal path testing.
+stage2_absolute_out_of_envelope.xlsx,stage2,absolute_setpoint,OUT_OF_ENVELOPE,Absolute setpoints shifted above feasible envelope.
+stage2_absolute_timestep_mismatch.xlsx,stage2,absolute_setpoint,TIMESTEP_MISMATCH,Last timestep removed per cluster.
+stage2_absolute_unknown_cluster.xlsx,stage2,absolute_setpoint,UNKNOWN_CLUSTER,Cluster ids replaced with an unknown value (999).
+stage2_flex_band_accept_baseline.xlsx,stage2,flex_band,ACCEPT_OR_EXPLICIT_REJECTION,Baseline flex-band commands for normal path testing.
+stage2_flex_band_out_of_envelope.xlsx,stage2,flex_band,OUT_OF_ENVELOPE,Band upper bound shifted above feasible envelope.
+stage2_flex_band_invalid_range.xlsx,stage2,flex_band,INVALID_BAND_RANGE,First row has p_min_kw > p_max_kw.

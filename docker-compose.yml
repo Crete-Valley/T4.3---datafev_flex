@@ -1,0 +1,18 @@
+services:
+  datafev-flex:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: "${USER_ID:?Set USER_ID (id -u)}:${GROUP_ID:?Set GROUP_ID (id -g)}"
+    container_name: datafev-flex
+    ports:
+      - "8000:8000"
+    environment:
+      DEFAULT_SOLVER_BACKEND: "glpk"
+      DEFAULT_OUTPUT_DIR: "/app/outputs"
+      STAGE1_CACHE_TTL_SECONDS: "900"
+      STAGE1_CACHE_MAX_ITEMS: "128"
+    volumes:
+      - ./outputs:/app/outputs
+      - ./inputs:/app/inputs:ro
+    restart: unless-stopped
