@@ -1,5 +1,7 @@
 .git
 .gitignore
+.venv
+.venv/
 .pytest_cache
 __pycache__
 *.pyc
@@ -7,7 +9,14 @@ __pycache__
 *.pyd
 .coverage
 htmlcov
+.codex
 venv
+venv/
 outputs
+outputs/
 tests
-architecture
+tests/
+docs
+docs/
+inputs/acceptance_cases
+inputs/acceptance_cases/

@@ -2,7 +2,7 @@
 
 FastAPI-based EV flexibility service for two-stage optimization, command tracking, and job-scoped exports.
 
-This repository provides a reproducible service workflow for EV charging clusters: Stage-1 computes day-ahead G2V/V2G flexibility envelopes, and Stage-2 performs flex-aware smart charging against absolute setpoints or flex-band commands. It includes both HTTP APIs and local workflow execution, with per-job artifact exports, tracking KPIs, and plotting utilities built on adapted components from [datafev](https://github.com/sogno-platform/datafev).
+This repository provides a reproducible service workflow for EV charging clusters: Stage-1 computes day-ahead G2V/V2G flexibility envelopes and now also builds a day-ahead market-price-driven smart charging baseline, while Stage-2 performs flex-aware smart charging against absolute setpoints or flex-band commands. It includes both HTTP APIs and local workflow execution, with per-job artifact exports, tracking KPIs, and plotting utilities built on adapted components from [datafev](https://github.com/sogno-platform/datafev).
 
 ## Table of Contents
 
@@ -25,9 +25,10 @@ The service answers a core question for EV aggregators and charging networks: *H
 1. Loads cluster topology and EV fleet data.
 2. Builds legacy-compatible `ChargerCluster` and `EVFleet` objects.
 3. Solves Stage-1 MILPs for maximum consumption and minimum consumption (export) profiles per cluster using Pyomo + Gurobi.
-4. Builds and validates Stage-2 commands (absolute setpoint or flex band) with schema and envelope checks; invalid commands are rejected.
-5. Solves Stage-2 cluster-aggregate flex-aware scheduling MILP with command tracking (`p_cc == p_set` for absolute, `p_min <= p_cc <= p_max` for flex band) and optional target SoC enforcement (`use_target_soc`).
-6. Exports capability and scheduling results, renders plots, and optionally runs KPI post-processing.
+4. Solves a Stage-1 day-ahead smart charging baseline using 15-minute market prices from the required `DayAheadMarketPrices` sheet.
+5. Builds and validates Stage-2 commands (absolute setpoint or flex band) with schema and envelope checks; invalid commands are rejected.
+6. Solves Stage-2 cluster-aggregate flex-aware scheduling MILP with command tracking (`p_cc == p_set` for absolute, `p_min <= p_cc <= p_max` for flex band), optional target SoC enforcement (`use_target_soc`), and price-aware charging preference.
+7. Exports capability and scheduling results, renders plots, and optionally runs KPI post-processing.
 
 Outputs are written under `outputs/`:
 - CLI (`python run_local_workflow.py`) writes stage-level paths:
@@ -46,7 +47,7 @@ Architecture flowchart: [`docs/architecture/flowchart.html`](docs/architecture/f
 ├── run_local_workflow.py                     # Orchestrates planning workflow
 ├── algorithms/
 │   ├── capability/             # Stage-1 MILPs (G2V / V2G envelopes)
-│   └── scheduling/             # Stage-2 MILP (flex-aware setpoint tracking)
+│   └── scheduling/             # Stage-1 day-ahead + Stage-2 flex-aware MILPs
 ├── data_handling/              # Legacy datafev adapters (clusters, fleet, EVs)
 ├── utils/
 │   ├── input_parser.py         # Reads Excel into dataframes
@@ -57,8 +58,10 @@ Architecture flowchart: [`docs/architecture/flowchart.html`](docs/architecture/f
 ├── api/app.py                  # FastAPI entrypoint (HTTP service mode)
 ├── services/                   # Orchestration layer used by CLI and API
 ├── inputs/stage1_sample_input.xlsx     # Sample Stage-1 input data
-├── inputs/stage2_sample_absolute_setpoints.xlsx # Sample Stage-2 absolute setpoints
-├── inputs/stage2_sample_flex_band_commands.xlsx # Sample Stage-2 flex-band commands
+├── inputs/stage2_sample_absolute_setpoints.xlsx # Happy-path Stage-2 absolute setpoints
+├── inputs/stage2_sample_flex_band_commands.xlsx # Happy-path Stage-2 flex-band commands
+├── inputs/stage2_sample_absolute_setpoints_stress.xlsx # Stress absolute setpoints
+├── inputs/stage2_sample_flex_band_commands_stress.xlsx # Stress flex-band commands
 ├── outputs/                    # Generated results (ignored by git)
 │   ├── flex_potential_estimation/
 │   ├── flex_aware_smart_charge_scheduling/
@@ -74,7 +77,7 @@ Key flow:
 2. `data_handling.charger.ChargerCluster`, `data_handling.fleet.EVFleet`, and `data_handling.multi_cluster.MultiClusterSystem` adapt to the legacy datafev model.
 3. `algorithms.capability.g2v_capability` and `algorithms.capability.v2g_capability` compute downward/upward capability envelopes (Stage 1).
 4. `utils.flex_command_utils` prepares setpoint commands and validates them against Stage-1 envelopes/timestamps.
-5. `algorithms.scheduling.flex_aware_scheduling` solves Stage-2 cluster-aggregate schedules in `strict` (hard tracking) or `best_effort` (mismatch-minimizing) mode.
+5. `algorithms.scheduling.day_ahead_smart_charging` solves the Stage-1 price-driven baseline and `algorithms.scheduling.flex_aware_scheduling` solves the Stage-2 command-tracking problem.
 6. `utils.output_utils` exports Stage-1 and Stage-2 artifacts; `utils.plotting_service` creates Stage-1 capability plots.
 7. `api/app.py` exposes the same workflow through HTTP endpoints.
 
@@ -83,7 +86,8 @@ Key flow:
 - **Excel-driven inputs**: configure EVs and chargers via `inputs/stage1_sample_input.xlsx`.
 - **Cluster capability computation**: solves MILPs for max consumption and min consumption per planning step.
 - **Stage-2 command scheduling**: solves cluster-aggregate MILP schedules for accepted absolute setpoints or flex bands.
-- **Optional best-effort Stage-2 tracking**: when strict tracking is infeasible or oversized, solve a feasible schedule that minimizes command mismatch and reports per-timestep compliance.
+- **Optional best-effort Stage-2 tracking**: when strict tracking is infeasible or oversized, solve a feasible schedule that first minimizes tracking deviation and then minimizes charging cost within that best deviation level.
+- **Price-aware Stage-2 dispatch**: when command freedom exists, Stage-2 prefers cheaper charging timesteps without relaxing EV or command constraints.
 - **Dual command type support**:
   - `absolute_setpoint`: `p_set_kw` per timestamp
   - `flex_band`: `p_min_kw` / `p_max_kw` per timestamp
@@ -93,7 +97,7 @@ Key flow:
 - **Time-series export**: configurable CSV/Parquet/XLSX exports including Stage-1 capability, Stage-2 scheduling, and Stage-2 tracking compliance reports.
 - **Plotting**: per-cluster and aggregate capability plots with optional connected-EV overlay.
 - **KPI post-processing**: `analysis/kpi_analysis.py` to compute energy potentials, ramp rates, availability, etc.
-- **Testing**: unit/integration tests via pytest, covering input parsing, capability solvers, exports, and plotting.
+- **Testing**: unit/integration tests via pytest, covering input parsing, Stage-1/Stage-2 solvers, workflow orchestration, exports, and plotting.
 - **Extensible**: add more algorithms, inputs, or visualization steps as needed.
 
 ## Installation
@@ -158,7 +162,7 @@ STAGE1_ID="$($CURL_CMD -sS -X POST "$BASE_URL/v1/flex-potential-estimation" \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["stage1_id"])')"
 echo "STAGE1_ID=$STAGE1_ID"
 
-# 3) Stage-2 request (absolute setpoint example)
+# 3) Stage-2 request (happy-path absolute example)
 $CURL_CMD -sS -X POST "$BASE_URL/v1/flex-aware-smart-charge-scheduling" \
   -F "stage1_id=$STAGE1_ID" \
   -F "command_type=absolute_setpoint" \
@@ -204,24 +208,39 @@ Edit `inputs/stage1_sample_input.xlsx` (or create your own) to define:
   - `planning_start`
   - `planning_end`
   - `time_step_minutes`
-- `Cluster` sheets: charger IDs, max charge/discharge power, efficiency.
+- `Clusters` sheet or `Cluster<n>` sheets: charger IDs, max charge/discharge power, efficiency.
 - `Fleet` sheet: EV arrival/departure times, SOC targets, cluster assignments, charging limits.
   - Optional Stage-2 strictness flag: `exact_target_soc` (`0/1`)
+- `DayAheadMarketPrices` sheet:
+  - `timestamp`
+  - `price_eur_per_kwh`
 
 ### 2. Run the planning workflow
 
 ```bash
 source venv/bin/activate
-python run_local_workflow.py
+SOLVER_BACKEND=highs python run_local_workflow.py
 ```
 
 Console output previews Stage-1 capability and Stage-2 scheduling summaries. Results are split by stage:
 
-- `outputs/flex_potential_estimation/cluster_capability_timeseries.xlsx` (one sheet per cluster, includes connected EV count).
+- `outputs/flex_potential_estimation/cluster_capability_timeseries.xlsx` (one sheet per cluster, includes connected EV count and Stage-1 `cluster_power_kW` baseline).
+- `outputs/flex_potential_estimation/day_ahead_smart_charging_schedule.xlsx` (per-EV `*_power` and `*_soc` sheets, market prices, cluster power, and total charging cost summary).
 - `outputs/flex_potential_estimation/cluster_<id>_capability.png` (per-cluster capability band + optional EV overlay).
 - `outputs/flex_potential_estimation/aggregate_capability.png` (sum across clusters).
 - `outputs/flex_aware_smart_charge_scheduling/stage2_flex_scheduling_results.xlsx` (command status, per-cluster command band, cluster power, EV power, EV SoC, and tracking report sheets).
 - `outputs/flex_aware_smart_charge_scheduling/stage2_cluster_<id>_ev_soc.png` (EV SoC schedules for accepted clusters).
+
+Default local Stage-2 behavior is a strict happy-path run:
+
+- `STAGE2_TEST_PROFILE=flex_band_from_file`
+- `STAGE2_TRACKING_MODE=strict`
+- `STAGE2_REFRESH_FLEX_BAND_FILE_FROM_STAGE1=1`
+
+When refresh is enabled, `run_local_workflow.py` writes a solver-aligned
+`generated_stage2_flex_band_commands.xlsx` under
+`outputs/flex_potential_estimation/` and uses that file for Stage-2. This
+keeps committed sample inputs stable while avoiding stale flex-band commands.
 
 ### 3. Post-process KPIs (optional)
 
@@ -289,7 +308,6 @@ curl -s -X POST "http://127.0.0.1:8000/v1/flex-potential-estimation" \
 curl -s -X POST "http://127.0.0.1:8000/v1/flex-aware-smart-charge-scheduling" \
   -F "stage1_id=<PASTE_STAGE1_ID_HERE>" \
   -F "command_type=absolute_setpoint" \
-  -F "command_strategy=midpoint" \
   -F "setpoints_file=@inputs/stage2_sample_absolute_setpoints.xlsx"
 ```
 
@@ -328,7 +346,7 @@ curl -s -X POST "http://127.0.0.1:8000/v1/flex-aware-smart-charge-scheduling" \
   }'
 ```
 
-5. Stage-2 (best-effort absolute tracking for oversized commands)
+5. Stage-2 (best-effort absolute tracking for stress commands)
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8000/v1/flex-aware-smart-charge-scheduling" \
@@ -336,7 +354,7 @@ curl -s -X POST "http://127.0.0.1:8000/v1/flex-aware-smart-charge-scheduling" \
   -F "command_type=absolute_setpoint" \
   -F "tracking_mode=best_effort" \
   -F "match_tolerance_kw=0.25" \
-  -F "setpoints_file=@inputs/stage2_sample_absolute_setpoints.xlsx"
+  -F "setpoints_file=@inputs/stage2_sample_absolute_setpoints_stress.xlsx"
 ```
 
 External Stage-2 command Excel format (`setpoints_file`):
@@ -353,8 +371,10 @@ External Stage-2 command Excel format (`setpoints_file`):
 - For `command_type=flex_band`, `p_set_kw` must not be provided.
 - One row per `(cluster_id, timestamp)`; duplicate rows are rejected.
 - Sample files:
-  - `inputs/stage2_sample_absolute_setpoints.xlsx` (absolute setpoint)
-  - `inputs/stage2_sample_flex_band_commands.xlsx` (flex band schema example)
+  - `inputs/stage2_sample_absolute_setpoints.xlsx` (happy-path absolute setpoint)
+  - `inputs/stage2_sample_flex_band_commands.xlsx` (happy-path flex band)
+  - `inputs/stage2_sample_absolute_setpoints_stress.xlsx` (stress absolute example)
+  - `inputs/stage2_sample_flex_band_commands_stress.xlsx` (stress flex-band example)
 
 ## Configuration
 
@@ -364,14 +384,19 @@ Core runtime configuration lives in `run_local_workflow.py`. Key knobs:
 - `stage2_test_profile`: selects one Stage-2 mode:
   - `absolute_from_file`
   - `flex_band_from_file`
+  - `absolute_from_file_stress`
+  - `flex_band_from_file_stress`
   - `absolute_midpoint`
   - `flex_band_midpoint`
 - `stage2_profiles`: maps profile to `command_type` and optional `setpoints_file`.
-- `stage2_refresh_flex_band_file_from_stage1`: when `True`, file-based flex-band commands are regenerated from current Stage-1 envelopes before Stage-2.
+- `stage2_refresh_flex_band_file_from_stage1`: when `True`, file-based flex-band commands are regenerated from current Stage-1 envelopes into `outputs/flex_potential_estimation/generated_stage2_flex_band_commands.xlsx` before Stage-2.
 - `capability_export_enabled` / `capability_export_format`: Stage-1 export controls (`csv`, `xlsx`, `parquet`).
 - `stage2_enabled`: enable/disable Stage-2 scheduling.
 - `stage2_command_strategy`: `midpoint` is used when the selected profile does not provide a command file.
 - `stage2_tracking_mode`: Stage-2 tracking policy (`strict` or `best_effort`).
+  - `strict` + `flex_band`: hard command tracking, then cheapest feasible charging.
+  - `strict` + `absolute_setpoint`: hard command tracking, aggregate fixed, cycling tie-breaker.
+  - `best_effort`: minimum tracking deviation first, then minimum charging cost.
 - `stage2_match_tolerance_kw`: tolerance used to mark per-timestep tracking `is_met`.
 - `stage2_export_enabled` / `stage2_export_format`: Stage-2 export controls (`csv`, `xlsx`).
 
@@ -382,6 +407,7 @@ Planning configuration:
 Solver configuration:
 
 - Default runtime backend is `gurobi_direct` in local Python runs.
+- `run_local_workflow.py` can be overridden without editing code, e.g. `SOLVER_BACKEND=highs python run_local_workflow.py`.
 - `docker-compose.yml` sets API default backend to `glpk` via environment variables.
 - `solver = SolverFactory("gurobi_direct")` – update or replace with other Pyomo-supported solvers if Gurobi is unavailable (e.g., `cbc`, `glpk`) but note capability formulations assume a MILP solver that handles continuous variables and constraints efficiently.
 - API requests expose `solver_backend`; examples: `glpk`, `gurobi_direct`.
@@ -394,7 +420,10 @@ Stage-2 policy:
   - flex band (`P_min(t) <= P_cluster(t) <= P_max(t)`)
 - Tracking mode is selectable:
   - `strict`: hard command tracking with rejection on envelope/model infeasibility.
-  - `best_effort`: keeps EV/SOC constraints hard and minimizes command mismatch.
+  - `best_effort`: keeps EV/SOC constraints hard, first minimizes tracking deviation, then minimizes charging cost within that best deviation level.
+- Price-awareness:
+  - `flex_band + strict`: among feasible band-tracking schedules, charging is shifted toward cheaper timesteps.
+  - `absolute_setpoint + strict`: aggregate power is fixed, so the secondary criterion remains cycling minimization.
 - Departure target policy per EV:
   - `use_target_soc=0` -> enforce `soc_dep >= min_soc`
   - `use_target_soc=1` and `exact_target_soc=0` -> enforce `soc_dep >= target_soc`
@@ -427,10 +456,13 @@ pytest
 
 Tests cover:
 
-- Input parsing from Excel (`tests/unit/test_input_parser.py`)
+- Input parsing from Excel, including `DayAheadMarketPrices` (`tests/unit/test_input_parser.py`)
 - Capability solver logic (`tests/unit/test_g2v_capability.py`, `tests/unit/test_cluster_capability.py`)
+- Stage-1 day-ahead smart charging (`tests/unit/test_day_ahead_smart_charging.py`)
 - Stage-2 command validation (`tests/unit/test_flex_command_utils.py`)
 - Stage-2 scheduling solver behavior (`tests/unit/test_flex_aware_scheduling.py`)
+- Workflow orchestration and Stage-1/Stage-2 service integration (`tests/unit/test_flex_workflow_service.py`)
+- Acceptance fixture generation (`tests/unit/test_acceptance_input_generator.py`)
 - Export utilities (`tests/unit/test_output_utils.py`)
 - Plot generation (`tests/unit/test_plotting_service.py`)
 - End-to-end workflow smoke test (`tests/integration/test_flex_workflow.py`)
@@ -443,7 +475,7 @@ Acceptance testing:
 - One-command acceptance matrix runner: `scripts/run_acceptance_matrix.sh`.
 - Deterministic acceptance fixtures can be generated with `venv/bin/python scripts/generate_acceptance_inputs.py`.
 - Remove generated acceptance fixtures with `venv/bin/python scripts/generate_acceptance_inputs.py --clean`.
-- Container smoke script: `scripts/smoke_api.sh`.
+- Container smoke script: `scripts/smoke_api.sh` (uses the committed happy-path absolute sample).
 
 CI:
 
@@ -458,7 +490,7 @@ CI:
 ```
 algorithms/                 Stage-1/Stage-2 MILP formulations
   capability/               G2V/V2G envelope models (Stage 1)
-  scheduling/               Flex-aware setpoint scheduler (Stage 2)
+  scheduling/               Day-ahead and flex-aware scheduling models
 api/                        FastAPI service entrypoint
 analysis/                   KPI scripts
 data_handling/              datafev adapters for clusters/fleet
@@ -485,7 +517,7 @@ utils/                      Helpers (input parsing, command validation, exports,
 ### Adding new features
 
 1. Extend input schema (`utils/input_parser.py`) if new columns are needed.
-2. Update `run_local_workflow.py` to pass additional parameters into `EVFleet` or capability solvers.
+2. Update `services/flex_workflow.py` and `run_local_workflow.py` if the new inputs must affect orchestration or CLI defaults.
 3. Add tests under `tests/unit/` or `tests/integration/`.
 4. Document the change in this README.
 

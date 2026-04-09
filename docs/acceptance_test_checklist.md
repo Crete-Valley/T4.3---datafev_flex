@@ -2,6 +2,12 @@
 
 This checklist validates API behavior end-to-end with a deterministic Stage-1 and Stage-2 input matrix.
 
+Stage-1 workbooks in this checklist are expected to contain a required
+`DayAheadMarketPrices` sheet with columns:
+
+- `timestamp`
+- `price_eur_per_kwh`
+
 ## Preconditions
 
 - Service is running on `http://127.0.0.1:8000`.
@@ -114,6 +120,9 @@ Expected:
 
 - All requests return HTTP `200`.
 - Response contains `stage1_id`, `cluster_capability_summary`, `job_output_root`, `output_dir`.
+- Generated Stage-1 artifacts include both:
+  - `cluster_capability_timeseries.xlsx`
+  - `day_ahead_smart_charging_schedule.xlsx`
 
 ## 3) Stage-2 Absolute Matrix
 
@@ -220,4 +229,5 @@ ls -lah "outputs/jobs/$SID/flex_aware_smart_charge_scheduling"
 Expected files include:
 
 - `outputs/jobs/<stage1_id>/flex_potential_estimation/cluster_capability_timeseries.xlsx`
+- `outputs/jobs/<stage1_id>/flex_potential_estimation/day_ahead_smart_charging_schedule.xlsx`
 - `outputs/jobs/<stage1_id>/flex_aware_smart_charge_scheduling/stage2_flex_scheduling_results.xlsx`

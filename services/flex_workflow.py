@@ -34,6 +34,9 @@ from pyomo.environ import SolverFactory
 from analysis.kpi_analysis import main as run_kpi_analysis
 from algorithms.capability.g2v_capability import compute_g2v_capability
 from algorithms.capability.v2g_capability import compute_v2g_capability
+from algorithms.scheduling.day_ahead_smart_charging import (
+    compute_day_ahead_smart_charging_schedule,
+)
 from algorithms.scheduling.flex_aware_scheduling import (
     TRACKING_MODE_BEST_EFFORT,
     TRACKING_MODE_STRICT,
@@ -50,8 +53,10 @@ from utils.flex_command_utils import (
     validate_stage2_commands,
 )
 from utils.input_parser import parse_xlsx_input
+from utils.input_parser import parse_day_ahead_prices_sheet
 from utils.input_parser import parse_planning_sheet
 from utils.output_utils import (
+    export_day_ahead_schedule_results,
     export_capability_timeseries,
     export_stage2_results,
     print_capability_summary,
@@ -85,6 +90,12 @@ class FlexPotentialEstimationArtifacts:
         Legacy datafev objects with enriched capability/schedule state.
     cluster_capability_summary, cluster_capability_ts, connected_evs_ts
         Export-ready Stage-1 summaries and trajectories.
+    market_price_ts
+        Horizon-aligned day-ahead market prices in EUR/kWh.
+    cluster_day_ahead_power_ts, cluster_day_ahead_ev_power_ts, cluster_day_ahead_ev_soc_ts
+        Cost-optimal Stage-1 charging baseline at cluster and EV level.
+    day_ahead_ev_summary
+        EV-level charging cost summary for workbook export.
     """
     planning_start: datetime
     planning_end: datetime
@@ -100,6 +111,11 @@ class FlexPotentialEstimationArtifacts:
     cluster_capability_summary: dict[str, dict[str, float]]
     cluster_capability_ts: dict[str, pd.DataFrame]
     connected_evs_ts: dict[str, pd.Series]
+    market_price_ts: pd.Series
+    cluster_day_ahead_power_ts: dict[str, pd.Series]
+    cluster_day_ahead_ev_power_ts: dict[str, pd.DataFrame]
+    cluster_day_ahead_ev_soc_ts: dict[str, pd.DataFrame]
+    day_ahead_ev_summary: pd.DataFrame
 
 
 @dataclass
@@ -407,6 +423,43 @@ def _resolve_stage1_output_dir(output_dir: str | None) -> str:
     return stage1_output_dir
 
 
+def _build_day_ahead_ev_summary(
+    ev_power_df: pd.DataFrame,
+    ev_soc_df: pd.DataFrame,
+    cluster_id: str,
+    cluster_inputs: dict[str, Any],
+    price_series: pd.Series,
+    step_hours: float,
+    planning_start: datetime,
+    time_step: timedelta,
+) -> list[dict[str, Any]]:
+    """Summarize EV-level day-ahead charging energy/cost for export."""
+    records: list[dict[str, Any]] = []
+    aligned_price = price_series.reindex(ev_power_df.index).astype(float)
+    ev_costs = ev_power_df.mul(aligned_price, axis=0).sum(axis=0) * step_hours
+    ev_energy = ev_power_df.sum(axis=0) * step_hours
+
+    for ev_id in ev_power_df.columns:
+        dep_idx = cluster_inputs["deptime"][ev_id]
+        arr_idx = cluster_inputs["arrtime"][ev_id]
+        scheduled_dep_soc = float(ev_soc_df.iloc[dep_idx][ev_id])
+        records.append(
+            {
+                "vehicle_id": ev_id,
+                "cluster_id": str(cluster_id),
+                "arrival_time": planning_start + arr_idx * time_step,
+                "departure_time": planning_start + dep_idx * time_step,
+                "initial_soc": float(cluster_inputs["inisoc"][ev_id]),
+                "target_soc": float(cluster_inputs["tarsoc"][ev_id]),
+                "scheduled_departure_soc": scheduled_dep_soc,
+                "charged_energy_kWh": float(ev_energy.get(ev_id, 0.0)),
+                "total_charging_cost_eur": float(ev_costs.get(ev_id, 0.0)),
+            }
+        )
+
+    return records
+
+
 def _resolve_stage2_output_dir(
     stage1_output_dir: str,
     output_dir: str | None = None,
@@ -445,8 +498,9 @@ def run_flex_potential_estimation(
 
     Purpose
     -------
-    Compute downward/upward flexibility envelopes for each cluster and export
-    optional plots/files.
+    Compute downward/upward flexibility envelopes for each cluster, solve a
+    day-ahead price-driven smart charging baseline, and export optional
+    plots/files.
 
     Parameters
     ----------
@@ -512,6 +566,20 @@ def run_flex_potential_estimation(
 
     opt_step = int(time_step.total_seconds())
     opt_horizon = list(range(len(planning_horizon) + 1))
+    ts_index = [planning_start + t * time_step for t in range(len(planning_horizon))]
+    soc_index = ts_index + [planning_end]
+    market_price_ts = parse_day_ahead_prices_sheet(
+        file_path=input_file_path,
+        planning_timestamps=ts_index,
+    )
+    market_price_dict = {
+        t: float(market_price_ts.iloc[t]) for t in range(len(planning_horizon))
+    }
+    step_hours = opt_step / 3600.0
+    cluster_day_ahead_power_ts: dict[str, pd.Series] = {}
+    cluster_day_ahead_ev_power_ts: dict[str, pd.DataFrame] = {}
+    cluster_day_ahead_ev_soc_ts: dict[str, pd.DataFrame] = {}
+    day_ahead_summary_records: list[dict[str, Any]] = []
 
     for cc_id, cc in mcsystem.clusters.items():
         cluster_inputs = _build_cluster_milp_inputs(
@@ -561,8 +629,6 @@ def run_flex_potential_estimation(
             use_tarsoc=cluster_inputs["use_tarsoc"],
         )
 
-        ts_index = [planning_start + t * time_step for t in range(len(planning_horizon))]
-
         p_max_series = pd.Series(
             {ts_index[t]: p_max_cluster[t] for t in range(len(planning_horizon))}
         )
@@ -603,9 +669,82 @@ def run_flex_potential_estimation(
             forecast_connected_evs_ts=forecast_connected_evs,
         )
 
+        p_ev_day_ahead, s_day_ahead, p_cc_day_ahead = compute_day_ahead_smart_charging_schedule(
+            solver=solver,
+            opt_step=opt_step,
+            opt_horizon=opt_horizon,
+            prices=market_price_dict,
+            bcap=cluster_inputs["bcap"],
+            inisoc=cluster_inputs["inisoc"],
+            arrtime=cluster_inputs["arrtime"],
+            tarsoc=cluster_inputs["tarsoc"],
+            minsoc=cluster_inputs["minsoc"],
+            maxsoc=cluster_inputs["maxsoc"],
+            ch_eff=cluster_inputs["ch_eff"],
+            pmax_pos=cluster_inputs["pmax_pos"],
+            deptime=cluster_inputs["deptime"],
+            use_tarsoc=cluster_inputs["use_tarsoc"],
+            use_exact_tarsoc=cluster_inputs["use_exact_tarsoc"],
+        )
+
+        ev_power_df = pd.DataFrame.from_dict(p_ev_day_ahead, orient="index").sort_index()
+        ev_power_df = ev_power_df.reindex(
+            range(len(planning_horizon)), fill_value=0.0
+        )
+        ev_power_df.index = ts_index
+
+        ev_soc_df = pd.DataFrame.from_dict(s_day_ahead, orient="index").sort_index()
+        ev_soc_df = ev_soc_df.reindex(
+            range(len(planning_horizon) + 1), fill_value=0.0
+        )
+        ev_soc_df.index = soc_index
+
+        cluster_power_series = pd.Series(
+            {ts_index[t]: p_cc_day_ahead[t] for t in range(len(planning_horizon))},
+            dtype=float,
+        )
+
+        cluster_day_ahead_power_ts[cc_id] = cluster_power_series
+        cluster_day_ahead_ev_power_ts[cc_id] = ev_power_df
+        cluster_day_ahead_ev_soc_ts[cc_id] = ev_soc_df
+        day_ahead_summary_records.extend(
+            _build_day_ahead_ev_summary(
+                ev_power_df=ev_power_df,
+                ev_soc_df=ev_soc_df,
+                cluster_id=cc_id,
+                cluster_inputs=cluster_inputs,
+                price_series=market_price_ts,
+                step_hours=step_hours,
+                planning_start=planning_start,
+                time_step=time_step,
+            )
+        )
+
     cluster_capability_summary = mcsystem.get_capability_summary()
     cluster_capability_ts = mcsystem.get_capability_timeseries()
     connected_evs_ts = mcsystem.get_connected_evs_timeseries()
+    day_ahead_ev_summary = pd.DataFrame(day_ahead_summary_records)
+    if not day_ahead_ev_summary.empty:
+        day_ahead_ev_summary = day_ahead_ev_summary.sort_values(
+            by=["cluster_id", "vehicle_id"], ignore_index=True
+        )
+        total_row = {
+            "vehicle_id": "ALL",
+            "cluster_id": "ALL",
+            "arrival_time": pd.NaT,
+            "departure_time": pd.NaT,
+            "initial_soc": float("nan"),
+            "target_soc": float("nan"),
+            "scheduled_departure_soc": float("nan"),
+            "charged_energy_kWh": float(day_ahead_ev_summary["charged_energy_kWh"].sum()),
+            "total_charging_cost_eur": float(
+                day_ahead_ev_summary["total_charging_cost_eur"].sum()
+            ),
+        }
+        day_ahead_ev_summary = pd.concat(
+            [day_ahead_ev_summary, pd.DataFrame([total_row])],
+            ignore_index=True,
+        )
 
     print_capability_summary(cluster_capability_summary)
     export_capability_timeseries(
@@ -614,6 +753,17 @@ def run_flex_potential_estimation(
         enabled=capability_export_enabled,
         export_format=capability_export_format,
         forecast_connected_evs_ts=connected_evs_ts,
+        cluster_power_ts=cluster_day_ahead_power_ts,
+    )
+    export_day_ahead_schedule_results(
+        market_price_ts=market_price_ts,
+        cluster_power_ts=cluster_day_ahead_power_ts,
+        cluster_ev_power_ts=cluster_day_ahead_ev_power_ts,
+        cluster_ev_soc_ts=cluster_day_ahead_ev_soc_ts,
+        ev_summary=day_ahead_ev_summary,
+        base_path=stage1_output_dir,
+        enabled=capability_export_enabled,
+        export_format=capability_export_format,
     )
 
     if generate_plots:
@@ -645,6 +795,11 @@ def run_flex_potential_estimation(
         cluster_capability_summary=cluster_capability_summary,
         cluster_capability_ts=cluster_capability_ts,
         connected_evs_ts=connected_evs_ts,
+        market_price_ts=market_price_ts,
+        cluster_day_ahead_power_ts=cluster_day_ahead_power_ts,
+        cluster_day_ahead_ev_power_ts=cluster_day_ahead_ev_power_ts,
+        cluster_day_ahead_ev_soc_ts=cluster_day_ahead_ev_soc_ts,
+        day_ahead_ev_summary=day_ahead_ev_summary,
     )
 
 
@@ -875,6 +1030,10 @@ def run_flex_aware_smart_charge_scheduling(
         command_type=normalized_command_type,
         enforce_envelope=(normalized_tracking_mode == TRACKING_MODE_STRICT),
     )
+    stage2_price_dict = {
+        t: float(artifacts.market_price_ts.iloc[t])
+        for t in range(len(artifacts.planning_horizon))
+    }
 
     for cc_id, cc in artifacts.mcsystem.clusters.items():
         if cc_id not in artifacts.cluster_capability_ts:
@@ -924,6 +1083,7 @@ def run_flex_aware_smart_charge_scheduling(
                 solver=artifacts.solver,
                 opt_step=artifacts.opt_step,
                 opt_horizon=artifacts.opt_horizon,
+                prices=stage2_price_dict,
                 setpoint=setpoint_dict,
                 p_min=p_min_dict,
                 p_max=p_max_dict,

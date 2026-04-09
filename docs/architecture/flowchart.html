@@ -28,7 +28,7 @@
             <h1 class="text-3xl md:text-4xl font-bold text-white mb-2">
                 datafev_flex Service Flowchart
             </h1>
-            <p class="text-blue-200">Stage-1 + Stage-2 (Strict / Best-Effort) + Tracking Analytics</p>
+            <p class="text-blue-200">Stage-1 Capability + Day-Ahead Smart Charging + Stage-2 Tracking</p>
         </div>
 
         <div class="flex flex-col items-center space-y-6">
@@ -44,7 +44,7 @@
                         <p class="text-emerald-200 font-semibold mb-1">Local (No Docker)</p>
                         <ul class="text-white text-sm space-y-1">
                             <li>- `python run_local_workflow.py`</li>
-                            <li>- Stage-1 + Stage-2 single-process run</li>
+                            <li>- Stage-1 capability + day-ahead baseline + Stage-2</li>
                             <li>- Manual tuning of solver/profile/exports</li>
                         </ul>
                     </div>
@@ -69,23 +69,34 @@
                     <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 12h16M4 17h16"/>
                     </svg>
-                    <h2 class="text-xl md:text-2xl font-bold text-white leading-tight">STAGE-1 FLEX POTENTIAL ESTIMATION</h2>
+                    <h2 class="text-xl md:text-2xl font-bold text-white leading-tight">STAGE-1 CAPABILITY + DAY-AHEAD SMART CHARGING</h2>
                 </div>
-                <div class="bg-white/10 rounded-lg p-4 backdrop-blur grid md:grid-cols-2 gap-4">
+                <div class="bg-white/10 rounded-lg p-4 backdrop-blur grid md:grid-cols-3 gap-4">
                     <div class="bg-purple-900/30 rounded p-3 border border-purple-400/30">
                         <p class="text-purple-200 font-semibold mb-1">Input + Parsing</p>
                         <ul class="text-white text-sm space-y-1">
                             <li>- `Planning`, `Fleet`, `Clusters` sheets</li>
+                            <li>- `DayAheadMarketPrices` sheet</li>
+                            <li>- `timestamp`, `price_eur_per_kwh`</li>
                             <li>- Horizon: `planning_start/end`, `time_step_minutes`</li>
-                            <li>- Build `EVFleet` + `MultiClusterSystem`</li>
+                            <li>- Build `EVFleet` + `MultiClusterSystem` + price series</li>
                         </ul>
                     </div>
                     <div class="bg-indigo-900/30 rounded p-3 border border-indigo-400/30">
-                        <p class="text-indigo-200 font-semibold mb-1">MILP Outputs</p>
+                        <p class="text-indigo-200 font-semibold mb-1">Capability MILPs</p>
                         <ul class="text-white text-sm space-y-1">
                             <li>- G2V envelope (downward capability)</li>
                             <li>- V2G envelope (upward capability)</li>
                             <li>- Per-cluster capability time-series</li>
+                        </ul>
+                    </div>
+                    <div class="bg-blue-900/30 rounded p-3 border border-blue-400/30">
+                        <p class="text-blue-200 font-semibold mb-1">Day-Ahead Baseline MILP</p>
+                        <ul class="text-white text-sm space-y-1">
+                            <li>- Cost-minimizing charge-only schedule</li>
+                            <li>- 15-min market price objective</li>
+                            <li>- EV power, EV SoC, cluster power</li>
+                            <li>- EV-level and total charging cost</li>
                         </ul>
                     </div>
                 </div>
@@ -116,7 +127,8 @@
                         <p class="text-amber-200 font-semibold mb-1">Artifacts</p>
                         <ul class="text-white text-sm space-y-1">
                             <li>- `outputs/jobs/&lt;stage1_id&gt;/flex_potential_estimation`</li>
-                            <li>- Capability files + plots</li>
+                            <li>- `cluster_capability_timeseries.xlsx` (+ `cluster_power_kW`)</li>
+                            <li>- `day_ahead_smart_charging_schedule.xlsx`</li>
                             <li>- Request-scoped result isolation</li>
                         </ul>
                     </div>
@@ -139,8 +151,9 @@
                     <div class="bg-orange-900/30 rounded p-3 border border-orange-400/30">
                         <p class="text-orange-200 font-semibold mb-1">Service Communication</p>
                         <ul class="text-white text-sm space-y-1">
-                            <li>- Send Stage-1 G2V/V2G capabilities</li>
-                            <li>- Share `stage1_id` for request traceability</li>
+                            <li>- Client submits `stage1_id` returned by Stage-1</li>
+                            <li>- Stage-1 capability exports stay job-scoped</li>
+                            <li>- Commands are validated against Stage-1 outputs</li>
                             <li>- Receive commands for Stage-2 scheduling</li>
                         </ul>
                     </div>
@@ -179,8 +192,9 @@
                     <div class="bg-red-900/30 rounded p-3 border border-red-400/30">
                         <p class="text-red-200 font-semibold mb-1">Tracking Modes</p>
                         <ul class="text-white text-sm space-y-1">
-                            <li>- `strict` (default): envelope enforced</li>
-                            <li>- `best_effort`: envelope soften + minimize mismatch</li>
+                            <li>- `strict` + `flex_band`: command hard, then cheapest feasible charging</li>
+                            <li>- `strict` + `absolute_setpoint`: aggregate fixed, cycling tie-breaker</li>
+                            <li>- `best_effort`: first minimize deviation, then minimize charging cost</li>
                             <li>- `match_tolerance_kw` for `is_met` decision</li>
                         </ul>
                     </div>
@@ -219,8 +233,10 @@
                         <p class="text-cyan-100 text-xs mt-2">These remain hard in both `strict` and `best_effort`.</p>
                     </div>
                     <div class="bg-blue-900/30 rounded p-3 border border-blue-400/30">
-                        <p class="text-blue-200 font-semibold mb-2">Tracking KPIs per Timestamp</p>
+                        <p class="text-blue-200 font-semibold mb-2">Objective + Tracking KPIs</p>
                         <ul class="text-white text-sm space-y-1">
+                            <li>- Reuse Stage-1 `DayAheadMarketPrices` timeline</li>
+                            <li>- Price-aware charging only when command freedom exists</li>
                             <li>- `datetime`</li>
                             <li>- requested (`p_set` or `p_min/p_max`)</li>
                             <li>- `delivered_p_kw`</li>
@@ -249,6 +265,7 @@
                         <p class="text-teal-200 font-semibold mb-1">Primary Exports</p>
                         <ul class="text-white text-sm space-y-1">
                             <li>- Stage-1 capability CSV/XLSX/Parquet</li>
+                            <li>- Stage-1 day-ahead smart charging XLSX/CSV</li>
                             <li>- Stage-2 scheduling XLSX/CSV</li>
                             <li>- Stage-2 tracking report per cluster</li>
                         </ul>
@@ -265,7 +282,7 @@
             </div>
 
             <div class="flex flex-col items-center py-4">
-                <p class="text-emerald-200 mt-2 font-semibold animate-pulse-soft">Service Ready: strict + best_effort scheduling with full traceability</p>
+                <p class="text-emerald-200 mt-2 font-semibold animate-pulse-soft">Service Ready: price-driven Stage-1 baseline + strict/best_effort Stage-2 scheduling</p>
             </div>
         </div>
     </div>
