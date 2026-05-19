@@ -56,6 +56,7 @@ from utils.input_parser import parse_xlsx_input
 from utils.input_parser import parse_day_ahead_prices_sheet
 from utils.input_parser import parse_planning_sheet
 from utils.output_utils import (
+    export_capability_to_database_via_api,
     export_day_ahead_schedule_results,
     export_capability_timeseries,
     export_stage2_results,
@@ -493,6 +494,8 @@ def run_flex_potential_estimation(
     capability_export_format: str = "xlsx",
     generate_plots: bool = True,
     run_kpi_analysis_enabled: bool = False,
+    db_export_enabled: bool = False,
+    db_api_url: str | None = None,
 ) -> FlexPotentialEstimationArtifacts:
     """Run Stage-1 FLEX POTENTIAL ESTIMATION and return workflow artifacts.
 
@@ -522,6 +525,12 @@ def run_flex_potential_estimation(
         Enable Stage-1 plots.
     run_kpi_analysis_enabled : bool
         Run offline KPI script after Stage-1.
+    db_export_enabled : bool
+        Enable writing Stage-1 capability data to DB via API.
+    db_api_url : str | None
+        Base URL of API for database export.
+        When `None`, database export is skipped.
+
 
     Returns
     -------
@@ -754,6 +763,13 @@ def run_flex_potential_estimation(
         export_format=capability_export_format,
         forecast_connected_evs_ts=connected_evs_ts,
         cluster_power_ts=cluster_day_ahead_power_ts,
+    )
+    export_capability_to_database_via_api(
+        cluster_capability_ts=cluster_capability_ts,
+        connected_evs_ts=connected_evs_ts,
+        cluster_power_ts=cluster_day_ahead_power_ts,
+        db_api_url=db_api_url,
+        enabled=db_export_enabled,
     )
     export_day_ahead_schedule_results(
         market_price_ts=market_price_ts,

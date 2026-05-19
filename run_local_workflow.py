@@ -25,6 +25,10 @@ keeps a single-process convenience flow for developers and offline analysis.
 
 import os
 import pandas as pd
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from services.flex_workflow import (
     run_flex_aware_smart_charge_scheduling,
@@ -53,6 +57,10 @@ capability_export_enabled = True
 capability_export_format = "xlsx"  # "parquet", "csv", "xlsx"
 generate_stage1_plots = True
 run_kpi_analysis_enabled = True
+
+# Database export via API
+db_api_url = os.getenv("DB_API_URL", "http://0.0.0.0:8000")
+db_export_enabled = os.getenv("DB_EXPORT_ENABLED", "0").strip().lower() in {"1","true","yes"}
 
 # Stage-2
 stage2_enabled = os.getenv("STAGE2_ENABLED", "0").strip().lower() not in {
@@ -225,6 +233,8 @@ if __name__ == "__main__":
         capability_export_format=capability_export_format,
         generate_plots=generate_stage1_plots,
         run_kpi_analysis_enabled=run_kpi_analysis_enabled,
+        db_api_url=db_api_url,
+        db_export_enabled=db_export_enabled,
     )
 
     print("Planning window starts at:", stage1_artifacts.planning_start)

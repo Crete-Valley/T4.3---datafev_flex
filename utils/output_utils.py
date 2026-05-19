@@ -7,8 +7,10 @@ focus on orchestration and optimization.
 """
 
 import os
+from datetime import datetime
 
 import pandas as pd
+import requests
 
 
 def print_capability_summary(cluster_capability_summary: dict[str, dict[str, float]]) -> None:
@@ -359,3 +361,83 @@ def export_stage2_results(
                 )
 
     print(f"Stage-2 scheduling results written to: {output_path}")
+
+
+def export_capability_to_database_via_api(
+    cluster_capability_ts: dict[str, pd.DataFrame],
+    connected_evs_ts: dict[str, pd.Series] | None,
+    cluster_power_ts: dict[str, pd.Series] | None,
+    db_api_url: str | None,
+    enabled: bool = False,
+) -> None:
+    """Persist Stage-1 capability time-series to database via API.
+
+    Parameters
+    ----------
+    cluster_capability_ts : dict[str, pd.DataFrame]
+        Per-cluster capability bands with `downward_capability_kW` and
+        `upward_capability_kW` columns.
+    connected_evs_ts : dict[str, pd.Series] | None
+        Optional connected-EV timeseries per cluster.
+    cluster_power_ts : dict[str, pd.Series] | None
+        Optional cluster power timeseries (day-ahead schedule).
+    db_api_url : str
+        Base URL of the DB API (e.g., "http://localhost:8000").
+    enabled : bool
+        If `False`, function returns immediately.
+
+    Returns
+    -------
+    None
+
+    Side Effects
+    ------------
+    Sends POST request to `/cluster_forecast/batch` endpoint.
+
+    Example
+    -------
+    >>> export_capability_to_database_via_api(
+    ...     cluster_capability_ts,
+    ...     connected_evs_ts,
+    ...     cluster_power_ts,
+    ...     db_api_url="http://localhost:8000",
+    ...     enabled=True,
+    ... )
+    """
+    if not enabled or db_api_url is None:
+        print("Database export skipped.")
+        return
+
+    batch_records = []
+    for cc_id, df in cluster_capability_ts.items():
+        for ts, row in df.iterrows():
+            record = {
+                "cluster_id": cc_id,
+                "ts": ts.isoformat() if isinstance(ts, datetime) else ts,
+                "downward_capability_kW": float(row.get("downward_capability_kW", 0)),
+                "upward_capability_kW": float(row.get("upward_capability_kW", 0)),
+                "connected_evs": int(
+                    connected_evs_ts.get(cc_id, pd.Series()).get(ts, 0)
+                    if connected_evs_ts else 0
+                ),
+                "cluster_power_kW": float(
+                    cluster_power_ts.get(cc_id, pd.Series()).get(ts, 0)
+                    if cluster_power_ts else 0
+                ),
+            }
+            batch_records.append(record)
+
+    if not batch_records:
+        print("No capability data to write to database.")
+        return
+
+    try:
+        response = requests.post(
+            f"{db_api_url}/cluster_forecast/batch",
+            json=batch_records,
+            timeout=30,
+        )
+        response.raise_for_status()
+        print(f"Successfully wrote {len(batch_records)} records to database.")
+    except requests.RequestException as e:
+        print(f"Failed to write to database: {e}")

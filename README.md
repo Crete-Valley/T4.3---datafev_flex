@@ -215,7 +215,18 @@ Edit `inputs/stage1_sample_input.xlsx` (or create your own) to define:
   - `timestamp`
   - `price_eur_per_kwh`
 
-### 2. Run the planning workflow
+### 2.1 (Optional) Add/change environment variables via .env file
+
+If you want to write output data to database via API, rename the .env.template file and if neccessary, alter its contents.
+
+
+```bash
+mv .env.template .env
+```
+Environment variables will be loaded from the .env file when the run_local_workflow.py script is run.
+
+### 2.2 Run the planning workflow
+
 
 ```bash
 source venv/bin/activate
