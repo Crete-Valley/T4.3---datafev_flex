@@ -1,7 +1,6 @@
 import pathlib
 import sys
 
-import pandas as pd
 import pytest
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -62,6 +61,8 @@ def fake_solver():
 
 @pytest.fixture
 def excel_builder(tmp_path):
+    import pandas as pd
+
     """Helper to create Excel files with arbitrary sheet definitions."""
 
     def _builder(sheet_map):
