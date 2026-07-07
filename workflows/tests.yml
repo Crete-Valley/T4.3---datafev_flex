@@ -3,7 +3,6 @@ name: Run Tests
 on:
   push:
     branches:
-      - develop
       - digital_twin_use_dbapi
   pull_request:
 
