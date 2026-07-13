@@ -9,7 +9,7 @@ from database.db_transactions import fetch_cluster_forecast, insert_cluster_fore
 def test_create_cluster_forecast():
     forecast = ClusterForecast(
         cluster_id=1,
-        ts="2024-01-01 08:00:00",
+        timestamp="2024-01-01 08:00:00",
         downward_capability_kW=3.0,
         upward_capability_kW=2.0,
         connected_evs=5,
@@ -22,7 +22,7 @@ def test_create_cluster_forecast():
 def test_fetch_cluster_forecast():
     forecast = ClusterForecast(
         cluster_id=1,
-        ts="2024-01-01 08:00:00",
+        timestamp="2024-01-01 08:00:00",
         downward_capability_kW=3.0,
         upward_capability_kW=2.0,
         connected_evs=5,
