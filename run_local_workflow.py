@@ -58,8 +58,8 @@ capability_export_format = "xlsx"  # "parquet", "csv", "xlsx"
 generate_stage1_plots = True
 run_kpi_analysis_enabled = True
 
-# Database export via API
-db_api_url = os.getenv("DB_API_URL", "http://0.0.0.0:8000")
+# Database input / output configuration
+db_input_enabled = os.getenv("DB_INPUT_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
 db_export_enabled = os.getenv("DB_EXPORT_ENABLED", "0").strip().lower() in {"1","true","yes"}
 
 # Stage-2
@@ -233,7 +233,7 @@ if __name__ == "__main__":
         capability_export_format=capability_export_format,
         generate_plots=generate_stage1_plots,
         run_kpi_analysis_enabled=run_kpi_analysis_enabled,
-        db_api_url=db_api_url,
+        db_input_enabled=db_input_enabled,
         db_export_enabled=db_export_enabled,
     )
 

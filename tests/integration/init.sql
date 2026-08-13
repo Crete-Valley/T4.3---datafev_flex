@@ -54,3 +54,5 @@ CREATE TABLE IF NOT EXISTS public.charging_schedule (
     total_charging_cost_eur     double precision NOT NULL,
     CONSTRAINT charging_schedule_pkey PRIMARY KEY (vehicle_id, cluster_id, "arrival_time_ts")
 );
+
+END;

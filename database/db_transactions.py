@@ -47,7 +47,7 @@ def insert_charging_schedule_batch(schedules: list[ChargingSchedule]):
                             departure_time_ts, initial_soc, target_soc, scheduled_departure_soc,
                             charged_energy_kWh, total_charging_cost_eur)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (vehicle_id) DO NOTHING;""",
+                            ON CONFLICT (vehicle_id, cluster_id, arrival_time_ts) DO NOTHING;""",
                 [(schedule.vehicle_id, schedule.cluster_id, schedule.arrival_time_ts,
                                 schedule.departure_time_ts, schedule.initial_soc, schedule.target_soc,
                                 schedule.scheduled_departure_soc, schedule.charged_energy_kWh,
