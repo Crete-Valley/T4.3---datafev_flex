@@ -20,8 +20,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from database.db_models import Cluster, Fleet
-from database.db_transactions import insert_cluster, insert_fleet
+from database.db_models import Cluster, Fleet, MarketPrice
+from database.db_transactions import insert_cluster, insert_fleet, insert_market_price
 
 DEFAULT_INPUT_FILE = ROOT_DIR / "inputs" / "stage1_sample_input.xlsx"
 
@@ -35,9 +35,12 @@ def import_excel_inputs(input_file: str | os.PathLike[str] = DEFAULT_INPUT_FILE)
         raise ValueError("Input workbook must contain a 'Fleet' sheet.")
     if "Clusters" not in workbook.sheet_names:
         raise ValueError("Input workbook must contain a 'Clusters' sheet.")
+    if "DayAheadMarketPrices" not in workbook.sheet_names:
+        raise ValueError("Input workbook must contain a 'DayAheadMarketPrices' sheet.")
 
     fleet_df = workbook.parse("Fleet")
     clusters_df = workbook.parse("Clusters")
+    market_prices_df = workbook.parse("DayAheadMarketPrices")
 
     for _, row in clusters_df.iterrows():
         cluster = Cluster(
@@ -67,9 +70,17 @@ def import_excel_inputs(input_file: str | os.PathLike[str] = DEFAULT_INPUT_FILE)
         )
         insert_fleet(fleet)
 
+    for _, row in market_prices_df.iterrows():
+        market_price = MarketPrice(
+            timestamp=pd.to_datetime(row["timestamp"]).to_pydatetime(),
+            price_eur_per_kwh=float(row["price_eur_per_kwh"]),
+        )
+        insert_market_price(market_price)
+
     return {
         "cluster_rows": int(len(clusters_df)),
         "fleet_rows": int(len(fleet_df)),
+        "market_price_rows": int(len(market_prices_df)),
     }
 
 

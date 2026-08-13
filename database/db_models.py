@@ -29,10 +29,29 @@ class Fleet:
 
 
 @dataclass
-class ClusterForecast():
+class MarketPrice:
+    timestamp: datetime
+    price_eur_per_kwh: float
+
+
+@dataclass
+class ClusterForecast:
     cluster_id: int
     timestamp: str
     downward_capability_kW: float
     upward_capability_kW: float
     connected_evs: int
     cluster_power_kW: float
+
+
+@dataclass
+class ChargingSchedule:
+    vehicle_id: str
+    cluster_id: str
+    arrival_time_ts: datetime
+    departure_time_ts: datetime
+    initial_soc: float
+    target_soc: float
+    scheduled_departure_soc: float
+    charged_energy_kWh: float
+    total_charging_cost_eur: float
