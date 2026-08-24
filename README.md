@@ -2,6 +2,8 @@
 
 FastAPI-based EV flexibility service for two-stage optimization, command tracking, and job-scoped exports.
 
+Documentation of **database-supported** flexibility service [here](./Database.md).
+
 This repository provides a reproducible service workflow for EV charging clusters: Stage-1 computes day-ahead G2V/V2G flexibility envelopes and now also builds a day-ahead market-price-driven smart charging baseline, while Stage-2 performs flex-aware smart charging against absolute setpoints or flex-band commands. It includes both HTTP APIs and local workflow execution, with per-job artifact exports, tracking KPIs, and plotting utilities built on adapted components from [datafev](https://github.com/sogno-platform/datafev).
 
 ## Table of Contents
