@@ -1,5 +1,17 @@
 # datafev_flex with database
 
+## Architecture and data flow
+The diagram below visualizes an overview of the datafev_flex service running with database:
+
+1. Upper part: Shows the tables which datafev_flex uses inside the database. Exemplary input data of the algorithm can be taken from an excel sheet by using the import script documented below.
+2. Lower part: Visualizes the API request to datafev_flex using database. The request expects a planning payload. Inside the datafev_flex service, the database input tables are read accordingly, then the forecasts are computed. Results are written to the database output tables and are also returned inside the request response.
+
+
+![image](docs/architecture/with_database.png)
+
+
+
+
 ### Startup 
 Startup the datafev_flex service with database:
 
