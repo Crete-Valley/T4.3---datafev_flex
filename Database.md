@@ -11,6 +11,16 @@ The diagram below visualizes an overview of the datafev_flex service running wit
 
 
 
+## Mapping of Excel sheets to database tables
+- data inputs in yellow, outputs in green
+- Excel sheets on the left hand and their mapped tables on the right
+- planning data is expected to come with the API request when using the database
+
+![image](docs/architecture/data_excel_db.png)
+
+
+
+
 
 ### Startup 
 Startup the datafev_flex service with database:
