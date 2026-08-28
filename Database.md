@@ -7,8 +7,7 @@ The diagram below visualizes an overview of the datafev_flex service running wit
 2. Lower part: Visualizes the API request to datafev_flex using database. The request expects a planning payload. Inside the datafev_flex service, the database input tables are read accordingly, then the forecasts are computed. Results are written to the database output tables and are also returned inside the request response.
 
 
-![image](docs/architecture/with_database.png)
-
+![image](docs/architecture/integration_datafev_flex_with_database.png)
 
 
 ## Mapping of Excel sheets to database tables
