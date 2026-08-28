@@ -52,10 +52,18 @@ from utils.flex_command_utils import (
     generate_midpoint_setpoint_commands,
     validate_stage2_commands,
 )
-from utils.input_parser import parse_xlsx_input
-from utils.input_parser import parse_day_ahead_prices_sheet
-from utils.input_parser import parse_planning_sheet
+from utils.input_parser import ( # TODO: refactor to move into fetcher module
+    fetch_day_ahead_prices_from_database,
+    fetch_database_inputs,
+)
+from utils.input_parser import (
+    parse_xlsx_input,
+    parse_day_ahead_prices_sheet,
+    parse_planning_sheet,
+)
 from utils.output_utils import (
+    export_capability_to_database,
+    export_day_ahead_schedule_to_database,
     export_day_ahead_schedule_results,
     export_capability_timeseries,
     export_stage2_results,
@@ -304,6 +312,69 @@ def _initialize_system_and_fleet(
     return mcsystem, fleet
 
 
+def _initialize_system_and_fleet_from_dataframes(
+    clusters_dict: dict[str, pd.DataFrame],
+    fleet_df: pd.DataFrame,
+    planning_horizon: list[datetime],
+) -> tuple[MultiClusterSystem, EVFleet]:
+    """Build legacy datafev cluster/fleet objects from parsed database dataframes.
+
+    Purpose
+    -------
+    Bridge database input schema to legacy objects expected by capability
+    and scheduling algorithms.
+
+    Parameters
+    ----------
+    clusters_dict : dict[str, pd.DataFrame]
+        Mapping of cluster ID to cluster charger dataframe
+    fleet_df : pd.DataFrame
+        Fleet dataframe
+    planning_horizon : list[datetime]
+        Discrete planning timestamps.
+
+    Returns
+    -------
+    tuple[MultiClusterSystem, EVFleet]
+        Initialized multicluster system and fleet objects.
+
+    Side Effects
+    ------------
+    Allocates and mutates legacy datafev objects.
+    """
+    mcsystem = MultiClusterSystem("multicluster")
+    for cid, df_cc in clusters_dict.items():
+        df_legacy = df_cc.rename(
+            columns={
+                "p_max_ch_kW": "cu_p_ch_max (kW)",
+                "p_max_ds_kW": "cu_p_ds_max (kW)",
+                "efficiency": "cu_eff",
+            }
+        )
+        charger_cluster = ChargerCluster(str(cid), df_legacy)
+        mcsystem.add_cc(charger_cluster)
+
+    fleet_df_legacy = fleet_df.copy()
+    fleet_df_legacy["estimated_arrival_time"] = fleet_df_legacy["arrival_time"]
+    fleet_df_legacy["estimated_departure_time"] = fleet_df_legacy["departure_time"]
+    fleet_df_legacy["estimated_arrival_SOC"] = fleet_df_legacy["initial_soc"]
+    fleet_df_legacy["target_departure_SOC"] = fleet_df_legacy["target_soc"]
+    fleet_df_legacy["min_allowed_SOC"] = fleet_df_legacy["min_allowed_soc"]
+    fleet_df_legacy["max_allowed_SOC"] = fleet_df_legacy["max_allowed_soc"]
+
+    fleet = EVFleet("fleet", fleet_df_legacy, planning_horizon)
+
+    for _, row in fleet_df.iterrows():
+        ev_id = row["vehicle_id"]
+        if ev_id in fleet.objects:
+            ev = fleet.objects[ev_id]
+            ev.use_target_soc = bool(row["use_target_soc"])
+            ev.exact_target_soc = bool(row.get("exact_target_soc", 0))
+            ev.cluster_target = str(row["target_cluster"])
+
+    return mcsystem, fleet
+
+
 def _build_cluster_milp_inputs(
     cc_id: str,
     cc: ChargerCluster,
@@ -482,104 +553,31 @@ def _resolve_stage2_output_dir(
     return stage2_output_dir
 
 
-def run_flex_potential_estimation(
-    input_file_path: str,
-    planning_start: datetime | None = None,
-    planning_end: datetime | None = None,
-    time_step: timedelta | None = None,
-    solver_backend: str = "gurobi_direct",
-    output_dir: str | None = None,
-    capability_export_enabled: bool = True,
-    capability_export_format: str = "xlsx",
-    generate_plots: bool = True,
-    run_kpi_analysis_enabled: bool = False,
-) -> FlexPotentialEstimationArtifacts:
-    """Run Stage-1 FLEX POTENTIAL ESTIMATION and return workflow artifacts.
+def _run_stage1_for_all_clusters(
+    mcsystem: MultiClusterSystem,
+    fleet: EVFleet,
+    planning_horizon: list[datetime],
+    planning_start: datetime,
+    planning_end: datetime,
+    time_step: timedelta,
+    solver: Any,
+    opt_step: int,
+    opt_horizon: list[int],
+    market_price_ts: pd.Series,
+):
+    """Run Stage-1 capability and day-ahead solves for all clusters.
 
-    Purpose
-    -------
-    Compute downward/upward flexibility envelopes for each cluster, solve a
-    day-ahead price-driven smart charging baseline, and export optional
-    plots/files.
-
-    Parameters
-    ----------
-    input_file_path : str
-        Path to primary Excel input workbook.
-    planning_start, planning_end, time_step : datetime | timedelta | None
-        Optional planning override. When any is `None`, values are parsed from
-        workbook `Planning` sheet.
-    solver_backend : str
-        Pyomo solver backend name. Example: ``"gurobi_direct"`` or ``"glpk"``.
-    output_dir : str | None
-        Output root directory. Stage-1 exports are written under
-        ``<output_dir>/flex_potential_estimation``.
-    capability_export_enabled : bool
-        Enable Stage-1 timeseries export.
-    capability_export_format : str
-        Export format (`xlsx`, `csv`, `parquet`).
-    generate_plots : bool
-        Enable Stage-1 plots.
-    run_kpi_analysis_enabled : bool
-        Run offline KPI script after Stage-1.
-
-    Returns
-    -------
-    FlexPotentialEstimationArtifacts
-        Full in-memory artifact bundle for Stage-2/API.
-
-    Side Effects
-    ------------
-    - Calls external solver.
-    - Writes files in Stage-1 output directory if export/plot flags enabled.
-    - Mutates `mcsystem` cluster capability fields.
-
-    Raises
-    ------
-    ValueError
-        For invalid planning/Excel schema values.
-    RuntimeError
-        Possible from solver backend or downstream routines.
-
-    Example
-    -------
-    >>> artifacts = run_flex_potential_estimation(
-    ...     input_file_path="inputs/stage1_sample_input.xlsx",
-    ...     solver_backend="glpk",
-    ... )
+    Returns per-cluster timeseries dicts and accumulated EV summary records.
     """
-    if planning_start is None or planning_end is None or time_step is None:
-        planning_cfg = parse_planning_sheet(input_file_path)
-        planning_start = planning_cfg["planning_start"]
-        planning_end = planning_cfg["planning_end"]
-        time_step = planning_cfg["time_step"]
-
-    planning_horizon = build_planning_horizon(planning_start, planning_end, time_step)
-
-    stage1_output_dir = _resolve_stage1_output_dir(output_dir)
-
-    solver = SolverFactory(solver_backend)
-    mcsystem, fleet = _initialize_system_and_fleet(
-        input_file_path=input_file_path,
-        planning_horizon=planning_horizon,
-    )
-
-    opt_step = int(time_step.total_seconds())
-    opt_horizon = list(range(len(planning_horizon) + 1))
     ts_index = [planning_start + t * time_step for t in range(len(planning_horizon))]
-    soc_index = ts_index + [planning_end]
-    market_price_ts = parse_day_ahead_prices_sheet(
-        file_path=input_file_path,
-        planning_timestamps=ts_index,
-    )
-    market_price_dict = {
-        t: float(market_price_ts.iloc[t]) for t in range(len(planning_horizon))
-    }
     step_hours = opt_step / 3600.0
+
     cluster_day_ahead_power_ts: dict[str, pd.Series] = {}
     cluster_day_ahead_ev_power_ts: dict[str, pd.DataFrame] = {}
     cluster_day_ahead_ev_soc_ts: dict[str, pd.DataFrame] = {}
     day_ahead_summary_records: list[dict[str, Any]] = []
+
+    market_price_dict = {t: float(market_price_ts.iloc[t]) for t in range(len(planning_horizon))}
 
     for cc_id, cc in mcsystem.clusters.items():
         cluster_inputs = _build_cluster_milp_inputs(
@@ -629,12 +627,8 @@ def run_flex_potential_estimation(
             use_tarsoc=cluster_inputs["use_tarsoc"],
         )
 
-        p_max_series = pd.Series(
-            {ts_index[t]: p_max_cluster[t] for t in range(len(planning_horizon))}
-        )
-        p_min_series = pd.Series(
-            {ts_index[t]: p_min_cluster[t] for t in range(len(planning_horizon))}
-        )
+        p_max_series = pd.Series({ts_index[t]: p_max_cluster[t] for t in range(len(planning_horizon))})
+        p_min_series = pd.Series({ts_index[t]: p_min_cluster[t] for t in range(len(planning_horizon))})
 
         downward_profile_kW = p_max_series.clip(lower=0.0)
         upward_profile_kW = (-p_min_series).clip(lower=0.0)
@@ -644,9 +638,7 @@ def run_flex_potential_estimation(
                 ts_index[t]: sum(
                     1
                     for ev_id in cluster_inputs["ev_ids"]
-                    if cluster_inputs["arrtime"][ev_id]
-                    <= t
-                    < cluster_inputs["deptime"][ev_id]
+                    if cluster_inputs["arrtime"][ev_id] <= t < cluster_inputs["deptime"][ev_id]
                 )
                 for t in range(len(planning_horizon))
             }
@@ -660,12 +652,10 @@ def run_flex_potential_estimation(
                 "downward_capability_kWh": downward_kwh,
                 "upward_capability_kWh": upward_kwh,
             },
-            timeseries=pd.DataFrame(
-                {
-                    "downward_capability_kW": downward_profile_kW,
-                    "upward_capability_kW": upward_profile_kW,
-                }
-            ),
+            timeseries=pd.DataFrame({
+                "downward_capability_kW": downward_profile_kW,
+                "upward_capability_kW": upward_profile_kW,
+            }),
             forecast_connected_evs_ts=forecast_connected_evs,
         )
 
@@ -688,21 +678,15 @@ def run_flex_potential_estimation(
         )
 
         ev_power_df = pd.DataFrame.from_dict(p_ev_day_ahead, orient="index").sort_index()
-        ev_power_df = ev_power_df.reindex(
-            range(len(planning_horizon)), fill_value=0.0
-        )
+        ev_power_df = ev_power_df.reindex(range(len(planning_horizon)), fill_value=0.0)
         ev_power_df.index = ts_index
 
+        soc_index = ts_index + [planning_end]
         ev_soc_df = pd.DataFrame.from_dict(s_day_ahead, orient="index").sort_index()
-        ev_soc_df = ev_soc_df.reindex(
-            range(len(planning_horizon) + 1), fill_value=0.0
-        )
+        ev_soc_df = ev_soc_df.reindex(range(len(planning_horizon) + 1), fill_value=0.0)
         ev_soc_df.index = soc_index
 
-        cluster_power_series = pd.Series(
-            {ts_index[t]: p_cc_day_ahead[t] for t in range(len(planning_horizon))},
-            dtype=float,
-        )
+        cluster_power_series = pd.Series({ts_index[t]: p_cc_day_ahead[t] for t in range(len(planning_horizon))}, dtype=float)
 
         cluster_day_ahead_power_ts[cc_id] = cluster_power_series
         cluster_day_ahead_ev_power_ts[cc_id] = ev_power_df
@@ -720,6 +704,160 @@ def run_flex_potential_estimation(
             )
         )
 
+    return (
+        cluster_day_ahead_power_ts,
+        cluster_day_ahead_ev_power_ts,
+        cluster_day_ahead_ev_soc_ts,
+        day_ahead_summary_records,
+    )
+
+
+def run_flex_potential_estimation(
+    input_file_path: str,
+    planning_start: datetime | None = None,
+    planning_end: datetime | None = None,
+    time_step: timedelta | None = None,
+    solver_backend: str = "gurobi_direct",
+    output_dir: str | None = None,
+    capability_export_enabled: bool = True,
+    capability_export_format: str = "xlsx",
+    generate_plots: bool = True,
+    run_kpi_analysis_enabled: bool = False,
+    db_input_enabled: bool = False,
+    db_export_enabled: bool = False,
+) -> FlexPotentialEstimationArtifacts:
+    """Run Stage-1 FLEX POTENTIAL ESTIMATION and return workflow artifacts.
+
+    Purpose
+    -------
+    Compute downward/upward flexibility envelopes for each cluster, solve a
+    day-ahead price-driven smart charging baseline, and export optional
+    plots/files.
+
+    Parameters
+    ----------
+    input_file_path : str
+        Path to primary Excel input workbook (ignored if `db_input_enabled=True`).
+    planning_start, planning_end, time_step : datetime | timedelta | None
+        Optional planning override. When any is `None`, values are parsed from
+        workbook `Planning` sheet or database.
+    solver_backend : str
+        Pyomo solver backend name. Example: ``"gurobi_direct"`` or ``"glpk"``.
+    output_dir : str | None
+        Output root directory. Stage-1 exports are written under
+        ``<output_dir>/flex_potential_estimation``.
+    capability_export_enabled : bool
+        Enable Stage-1 timeseries export.
+    capability_export_format : str
+        Export format (`xlsx`, `csv`, `parquet`).
+    generate_plots : bool
+        Enable Stage-1 plots.
+    run_kpi_analysis_enabled : bool
+        Run offline KPI script after Stage-1.
+    db_input_enabled : bool
+        Read input data from database instead of Excel.
+    db_export_enabled : bool
+        Enable writing estimation results to DB.
+
+
+    Returns
+    -------
+    FlexPotentialEstimationArtifacts
+        Full in-memory artifact bundle for Stage-2/API.
+
+    Side Effects
+    ------------
+    - Calls external solver.
+    - Writes files in Stage-1 output directory if export/plot flags enabled.
+    - Mutates `mcsystem` cluster capability fields.
+
+    Raises
+    ------
+    ValueError
+        For invalid planning/Excel schema values.
+    RuntimeError
+        Possible from solver backend or downstream routines.
+
+    Example
+    -------
+    >>> artifacts = run_flex_potential_estimation(
+    ...     input_file_path="inputs/stage1_sample_input.xlsx",
+    ...     solver_backend="glpk",
+    ... )
+    """
+    if db_input_enabled:
+        clusters_dict, fleet_df = fetch_database_inputs()
+    else:
+        clusters_dict, fleet_df = None, None
+
+    if planning_start is None or planning_end is None or time_step is None:
+        planning_cfg = parse_planning_sheet(input_file_path)
+        planning_start = planning_cfg["planning_start"]
+        planning_end = planning_cfg["planning_end"]
+        time_step = planning_cfg["time_step"]
+
+    planning_horizon = build_planning_horizon(planning_start, planning_end, time_step)
+
+    stage1_output_dir = _resolve_stage1_output_dir(output_dir)
+
+    solver = SolverFactory(solver_backend)
+    if db_input_enabled and clusters_dict is not None and fleet_df is not None:
+        # Use database-loaded data
+        mcsystem, fleet = _initialize_system_and_fleet_from_dataframes(
+            clusters_dict=clusters_dict,
+            fleet_df=fleet_df,
+            planning_horizon=planning_horizon,
+        )
+    else:
+        # Use Excel input
+        mcsystem, fleet = _initialize_system_and_fleet(
+            input_file_path=input_file_path,
+            planning_horizon=planning_horizon,
+        )
+
+    opt_step = int(time_step.total_seconds())
+    opt_horizon = list(range(len(planning_horizon) + 1))
+    ts_index = [planning_start + t * time_step for t in range(len(planning_horizon))]
+
+    if db_input_enabled:
+        market_price_ts = fetch_day_ahead_prices_from_database(planning_timestamps=ts_index)
+    else:
+        market_price_ts = parse_day_ahead_prices_sheet(
+            file_path=input_file_path,
+            planning_timestamps=ts_index,
+        )
+
+    # Prepare for per-cluster MILP solves and timeseries aggregation
+    market_price_dict = {
+        t: float(market_price_ts.iloc[t]) for t in range(len(planning_horizon))
+    }
+    step_hours = opt_step / 3600.0
+    cluster_day_ahead_power_ts: dict[str, pd.Series] = {}
+    cluster_day_ahead_ev_power_ts: dict[str, pd.DataFrame] = {}
+    cluster_day_ahead_ev_soc_ts: dict[str, pd.DataFrame] = {}
+    day_ahead_summary_records: list[dict[str, Any]] = []
+    soc_index = ts_index + [planning_end]
+
+    # Stage-1: compute downward/upward envelopes and day-ahead smart charging
+    (
+        cluster_day_ahead_power_ts,
+        cluster_day_ahead_ev_power_ts,
+        cluster_day_ahead_ev_soc_ts,
+        day_ahead_summary_records,
+    ) = _run_stage1_for_all_clusters(
+        mcsystem=mcsystem,
+        fleet=fleet,
+        planning_horizon=planning_horizon,
+        planning_start=planning_start,
+        planning_end=planning_end,
+        time_step=time_step,
+        solver=solver,
+        opt_step=opt_step,
+        opt_horizon=opt_horizon,
+        market_price_ts=market_price_ts,
+    )
+
+    # Finalize Stage-1 outputs and export/plot as requested
     cluster_capability_summary = mcsystem.get_capability_summary()
     cluster_capability_ts = mcsystem.get_capability_timeseries()
     connected_evs_ts = mcsystem.get_connected_evs_timeseries()
@@ -728,43 +866,38 @@ def run_flex_potential_estimation(
         day_ahead_ev_summary = day_ahead_ev_summary.sort_values(
             by=["cluster_id", "vehicle_id"], ignore_index=True
         )
-        total_row = {
-            "vehicle_id": "ALL",
-            "cluster_id": "ALL",
-            "arrival_time": pd.NaT,
-            "departure_time": pd.NaT,
-            "initial_soc": float("nan"),
-            "target_soc": float("nan"),
-            "scheduled_departure_soc": float("nan"),
-            "charged_energy_kWh": float(day_ahead_ev_summary["charged_energy_kWh"].sum()),
-            "total_charging_cost_eur": float(
-                day_ahead_ev_summary["total_charging_cost_eur"].sum()
-            ),
-        }
-        day_ahead_ev_summary = pd.concat(
-            [day_ahead_ev_summary, pd.DataFrame([total_row])],
-            ignore_index=True,
-        )
 
     print_capability_summary(cluster_capability_summary)
-    export_capability_timeseries(
-        cluster_capability_ts,
-        base_path=stage1_output_dir,
-        enabled=capability_export_enabled,
-        export_format=capability_export_format,
-        forecast_connected_evs_ts=connected_evs_ts,
-        cluster_power_ts=cluster_day_ahead_power_ts,
+
+    if db_input_enabled:
+        export_capability_to_database(
+            cluster_capability_ts=cluster_capability_ts,
+            connected_evs_ts=connected_evs_ts,
+            cluster_power_ts=cluster_day_ahead_power_ts,
+            enabled=db_export_enabled,
+        )
+        export_day_ahead_schedule_to_database(
+            ev_summary=day_ahead_ev_summary,
     )
-    export_day_ahead_schedule_results(
-        market_price_ts=market_price_ts,
-        cluster_power_ts=cluster_day_ahead_power_ts,
-        cluster_ev_power_ts=cluster_day_ahead_ev_power_ts,
-        cluster_ev_soc_ts=cluster_day_ahead_ev_soc_ts,
-        ev_summary=day_ahead_ev_summary,
-        base_path=stage1_output_dir,
-        enabled=capability_export_enabled,
-        export_format=capability_export_format,
-    )
+    else:
+        export_capability_timeseries(
+            cluster_capability_ts,
+            base_path=stage1_output_dir,
+            enabled=capability_export_enabled,
+            export_format=capability_export_format,
+            forecast_connected_evs_ts=connected_evs_ts,
+            cluster_power_ts=cluster_day_ahead_power_ts,
+        )
+        export_day_ahead_schedule_results(
+            market_price_ts=market_price_ts,
+            cluster_power_ts=cluster_day_ahead_power_ts,
+            cluster_ev_power_ts=cluster_day_ahead_ev_power_ts,
+            cluster_ev_soc_ts=cluster_day_ahead_ev_soc_ts,
+            ev_summary=day_ahead_ev_summary,
+            base_path=stage1_output_dir,
+            enabled=capability_export_enabled,
+            export_format=capability_export_format,
+        )
 
     if generate_plots:
         plot_cluster_capability_bands(

@@ -2,6 +2,8 @@
 
 FastAPI-based EV flexibility service for two-stage optimization, command tracking, and job-scoped exports.
 
+Documentation of **database-supported** flexibility service [here](./Database.md).
+
 This repository provides a reproducible service workflow for EV charging clusters: Stage-1 computes day-ahead G2V/V2G flexibility envelopes and now also builds a day-ahead market-price-driven smart charging baseline, while Stage-2 performs flex-aware smart charging against absolute setpoints or flex-band commands. It includes both HTTP APIs and local workflow execution, with per-job artifact exports, tracking KPIs, and plotting utilities built on adapted components from [datafev](https://github.com/sogno-platform/datafev).
 
 ## Table of Contents
@@ -215,7 +217,18 @@ Edit `inputs/stage1_sample_input.xlsx` (or create your own) to define:
   - `timestamp`
   - `price_eur_per_kwh`
 
-### 2. Run the planning workflow
+### 2.1 (Optional) Add/change environment variables via .env file
+
+If you want to write output data to database via API, rename the .env.template file and if neccessary, alter its contents.
+
+
+```bash
+mv .env.template .env
+```
+Environment variables will be loaded from the .env file when the run_local_workflow.py script is run.
+
+### 2.2 Run the planning workflow
+
 
 ```bash
 source venv/bin/activate
