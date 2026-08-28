@@ -553,6 +553,165 @@ def _resolve_stage2_output_dir(
     return stage2_output_dir
 
 
+def _run_stage1_for_all_clusters(
+    mcsystem: MultiClusterSystem,
+    fleet: EVFleet,
+    planning_horizon: list[datetime],
+    planning_start: datetime,
+    planning_end: datetime,
+    time_step: timedelta,
+    solver: Any,
+    opt_step: int,
+    opt_horizon: list[int],
+    market_price_ts: pd.Series,
+):
+    """Run Stage-1 capability and day-ahead solves for all clusters.
+
+    Returns per-cluster timeseries dicts and accumulated EV summary records.
+    """
+    ts_index = [planning_start + t * time_step for t in range(len(planning_horizon))]
+    step_hours = opt_step / 3600.0
+
+    cluster_day_ahead_power_ts: dict[str, pd.Series] = {}
+    cluster_day_ahead_ev_power_ts: dict[str, pd.DataFrame] = {}
+    cluster_day_ahead_ev_soc_ts: dict[str, pd.DataFrame] = {}
+    day_ahead_summary_records: list[dict[str, Any]] = []
+
+    market_price_dict = {t: float(market_price_ts.iloc[t]) for t in range(len(planning_horizon))}
+
+    for cc_id, cc in mcsystem.clusters.items():
+        cluster_inputs = _build_cluster_milp_inputs(
+            cc_id=cc_id,
+            cc=cc,
+            fleet=fleet,
+            planning_start=planning_start,
+            time_step=time_step,
+        )
+
+        if cluster_inputs is None:
+            continue
+
+        _, _, p_max_cluster = compute_g2v_capability(
+            solver=solver,
+            opt_step=opt_step,
+            opt_horizon=opt_horizon,
+            bcap=cluster_inputs["bcap"],
+            inisoc=cluster_inputs["inisoc"],
+            arrtime=cluster_inputs["arrtime"],
+            tarsoc=cluster_inputs["tarsoc"],
+            minsoc=cluster_inputs["minsoc"],
+            maxsoc=cluster_inputs["maxsoc"],
+            ch_eff=cluster_inputs["ch_eff"],
+            ds_eff=cluster_inputs["ds_eff"],
+            pmax_pos=cluster_inputs["pmax_pos"],
+            pmax_neg=cluster_inputs["pmax_neg"],
+            deptime=cluster_inputs["deptime"],
+            use_tarsoc=cluster_inputs["use_tarsoc"],
+        )
+
+        _, _, p_min_cluster = compute_v2g_capability(
+            solver=solver,
+            opt_step=opt_step,
+            opt_horizon=opt_horizon,
+            bcap=cluster_inputs["bcap"],
+            inisoc=cluster_inputs["inisoc"],
+            arrtime=cluster_inputs["arrtime"],
+            tarsoc=cluster_inputs["tarsoc"],
+            minsoc=cluster_inputs["minsoc"],
+            maxsoc=cluster_inputs["maxsoc"],
+            ch_eff=cluster_inputs["ch_eff"],
+            ds_eff=cluster_inputs["ds_eff"],
+            pmax_pos=cluster_inputs["pmax_pos"],
+            pmax_neg=cluster_inputs["pmax_neg"],
+            deptime=cluster_inputs["deptime"],
+            use_tarsoc=cluster_inputs["use_tarsoc"],
+        )
+
+        p_max_series = pd.Series({ts_index[t]: p_max_cluster[t] for t in range(len(planning_horizon))})
+        p_min_series = pd.Series({ts_index[t]: p_min_cluster[t] for t in range(len(planning_horizon))})
+
+        downward_profile_kW = p_max_series.clip(lower=0.0)
+        upward_profile_kW = (-p_min_series).clip(lower=0.0)
+
+        forecast_connected_evs = pd.Series(
+            {
+                ts_index[t]: sum(
+                    1
+                    for ev_id in cluster_inputs["ev_ids"]
+                    if cluster_inputs["arrtime"][ev_id] <= t < cluster_inputs["deptime"][ev_id]
+                )
+                for t in range(len(planning_horizon))
+            }
+        )
+
+        downward_kwh = downward_profile_kW.sum() * opt_step / 3600.0
+        upward_kwh = upward_profile_kW.sum() * opt_step / 3600.0
+
+        cc.set_capability(
+            summary={
+                "downward_capability_kWh": downward_kwh,
+                "upward_capability_kWh": upward_kwh,
+            },
+            timeseries=pd.DataFrame({
+                "downward_capability_kW": downward_profile_kW,
+                "upward_capability_kW": upward_profile_kW,
+            }),
+            forecast_connected_evs_ts=forecast_connected_evs,
+        )
+
+        p_ev_day_ahead, s_day_ahead, p_cc_day_ahead = compute_day_ahead_smart_charging_schedule(
+            solver=solver,
+            opt_step=opt_step,
+            opt_horizon=opt_horizon,
+            prices=market_price_dict,
+            bcap=cluster_inputs["bcap"],
+            inisoc=cluster_inputs["inisoc"],
+            arrtime=cluster_inputs["arrtime"],
+            tarsoc=cluster_inputs["tarsoc"],
+            minsoc=cluster_inputs["minsoc"],
+            maxsoc=cluster_inputs["maxsoc"],
+            ch_eff=cluster_inputs["ch_eff"],
+            pmax_pos=cluster_inputs["pmax_pos"],
+            deptime=cluster_inputs["deptime"],
+            use_tarsoc=cluster_inputs["use_tarsoc"],
+            use_exact_tarsoc=cluster_inputs["use_exact_tarsoc"],
+        )
+
+        ev_power_df = pd.DataFrame.from_dict(p_ev_day_ahead, orient="index").sort_index()
+        ev_power_df = ev_power_df.reindex(range(len(planning_horizon)), fill_value=0.0)
+        ev_power_df.index = ts_index
+
+        soc_index = ts_index + [planning_end]
+        ev_soc_df = pd.DataFrame.from_dict(s_day_ahead, orient="index").sort_index()
+        ev_soc_df = ev_soc_df.reindex(range(len(planning_horizon) + 1), fill_value=0.0)
+        ev_soc_df.index = soc_index
+
+        cluster_power_series = pd.Series({ts_index[t]: p_cc_day_ahead[t] for t in range(len(planning_horizon))}, dtype=float)
+
+        cluster_day_ahead_power_ts[cc_id] = cluster_power_series
+        cluster_day_ahead_ev_power_ts[cc_id] = ev_power_df
+        cluster_day_ahead_ev_soc_ts[cc_id] = ev_soc_df
+        day_ahead_summary_records.extend(
+            _build_day_ahead_ev_summary(
+                ev_power_df=ev_power_df,
+                ev_soc_df=ev_soc_df,
+                cluster_id=cc_id,
+                cluster_inputs=cluster_inputs,
+                price_series=market_price_ts,
+                step_hours=step_hours,
+                planning_start=planning_start,
+                time_step=time_step,
+            )
+        )
+
+    return (
+        cluster_day_ahead_power_ts,
+        cluster_day_ahead_ev_power_ts,
+        cluster_day_ahead_ev_soc_ts,
+        day_ahead_summary_records,
+    )
+
+
 def run_flex_potential_estimation(
     input_file_path: str,
     planning_start: datetime | None = None,
@@ -659,7 +818,6 @@ def run_flex_potential_estimation(
     opt_step = int(time_step.total_seconds())
     opt_horizon = list(range(len(planning_horizon) + 1))
     ts_index = [planning_start + t * time_step for t in range(len(planning_horizon))]
-    soc_index = ts_index + [planning_end]
 
     if db_input_enabled:
         market_price_ts = fetch_day_ahead_prices_from_database(planning_timestamps=ts_index)
@@ -669,6 +827,7 @@ def run_flex_potential_estimation(
             planning_timestamps=ts_index,
         )
 
+    # Prepare for per-cluster MILP solves and timeseries aggregation
     market_price_dict = {
         t: float(market_price_ts.iloc[t]) for t in range(len(planning_horizon))
     }
@@ -677,146 +836,28 @@ def run_flex_potential_estimation(
     cluster_day_ahead_ev_power_ts: dict[str, pd.DataFrame] = {}
     cluster_day_ahead_ev_soc_ts: dict[str, pd.DataFrame] = {}
     day_ahead_summary_records: list[dict[str, Any]] = []
+    soc_index = ts_index + [planning_end]
 
-    for cc_id, cc in mcsystem.clusters.items():
-        cluster_inputs = _build_cluster_milp_inputs(
-            cc_id=cc_id,
-            cc=cc,
-            fleet=fleet,
-            planning_start=planning_start,
-            time_step=time_step,
-        )
+    # Stage-1: compute downward/upward envelopes and day-ahead smart charging
+    (
+        cluster_day_ahead_power_ts,
+        cluster_day_ahead_ev_power_ts,
+        cluster_day_ahead_ev_soc_ts,
+        day_ahead_summary_records,
+    ) = _run_stage1_for_all_clusters(
+        mcsystem=mcsystem,
+        fleet=fleet,
+        planning_horizon=planning_horizon,
+        planning_start=planning_start,
+        planning_end=planning_end,
+        time_step=time_step,
+        solver=solver,
+        opt_step=opt_step,
+        opt_horizon=opt_horizon,
+        market_price_ts=market_price_ts,
+    )
 
-        if cluster_inputs is None:
-            continue
-
-        _, _, p_max_cluster = compute_g2v_capability(
-            solver=solver,
-            opt_step=opt_step,
-            opt_horizon=opt_horizon,
-            bcap=cluster_inputs["bcap"],
-            inisoc=cluster_inputs["inisoc"],
-            arrtime=cluster_inputs["arrtime"],
-            tarsoc=cluster_inputs["tarsoc"],
-            minsoc=cluster_inputs["minsoc"],
-            maxsoc=cluster_inputs["maxsoc"],
-            ch_eff=cluster_inputs["ch_eff"],
-            ds_eff=cluster_inputs["ds_eff"],
-            pmax_pos=cluster_inputs["pmax_pos"],
-            pmax_neg=cluster_inputs["pmax_neg"],
-            deptime=cluster_inputs["deptime"],
-            use_tarsoc=cluster_inputs["use_tarsoc"],
-        )
-
-        _, _, p_min_cluster = compute_v2g_capability(
-            solver=solver,
-            opt_step=opt_step,
-            opt_horizon=opt_horizon,
-            bcap=cluster_inputs["bcap"],
-            inisoc=cluster_inputs["inisoc"],
-            arrtime=cluster_inputs["arrtime"],
-            tarsoc=cluster_inputs["tarsoc"],
-            minsoc=cluster_inputs["minsoc"],
-            maxsoc=cluster_inputs["maxsoc"],
-            ch_eff=cluster_inputs["ch_eff"],
-            ds_eff=cluster_inputs["ds_eff"],
-            pmax_pos=cluster_inputs["pmax_pos"],
-            pmax_neg=cluster_inputs["pmax_neg"],
-            deptime=cluster_inputs["deptime"],
-            use_tarsoc=cluster_inputs["use_tarsoc"],
-        )
-
-        p_max_series = pd.Series(
-            {ts_index[t]: p_max_cluster[t] for t in range(len(planning_horizon))}
-        )
-        p_min_series = pd.Series(
-            {ts_index[t]: p_min_cluster[t] for t in range(len(planning_horizon))}
-        )
-
-        downward_profile_kW = p_max_series.clip(lower=0.0)
-        upward_profile_kW = (-p_min_series).clip(lower=0.0)
-
-        forecast_connected_evs = pd.Series(
-            {
-                ts_index[t]: sum(
-                    1
-                    for ev_id in cluster_inputs["ev_ids"]
-                    if cluster_inputs["arrtime"][ev_id]
-                    <= t
-                    < cluster_inputs["deptime"][ev_id]
-                )
-                for t in range(len(planning_horizon))
-            }
-        )
-
-        downward_kwh = downward_profile_kW.sum() * opt_step / 3600.0
-        upward_kwh = upward_profile_kW.sum() * opt_step / 3600.0
-
-        cc.set_capability(
-            summary={
-                "downward_capability_kWh": downward_kwh,
-                "upward_capability_kWh": upward_kwh,
-            },
-            timeseries=pd.DataFrame(
-                {
-                    "downward_capability_kW": downward_profile_kW,
-                    "upward_capability_kW": upward_profile_kW,
-                }
-            ),
-            forecast_connected_evs_ts=forecast_connected_evs,
-        )
-
-        p_ev_day_ahead, s_day_ahead, p_cc_day_ahead = compute_day_ahead_smart_charging_schedule(
-            solver=solver,
-            opt_step=opt_step,
-            opt_horizon=opt_horizon,
-            prices=market_price_dict,
-            bcap=cluster_inputs["bcap"],
-            inisoc=cluster_inputs["inisoc"],
-            arrtime=cluster_inputs["arrtime"],
-            tarsoc=cluster_inputs["tarsoc"],
-            minsoc=cluster_inputs["minsoc"],
-            maxsoc=cluster_inputs["maxsoc"],
-            ch_eff=cluster_inputs["ch_eff"],
-            pmax_pos=cluster_inputs["pmax_pos"],
-            deptime=cluster_inputs["deptime"],
-            use_tarsoc=cluster_inputs["use_tarsoc"],
-            use_exact_tarsoc=cluster_inputs["use_exact_tarsoc"],
-        )
-
-        ev_power_df = pd.DataFrame.from_dict(p_ev_day_ahead, orient="index").sort_index()
-        ev_power_df = ev_power_df.reindex(
-            range(len(planning_horizon)), fill_value=0.0
-        )
-        ev_power_df.index = ts_index
-
-        ev_soc_df = pd.DataFrame.from_dict(s_day_ahead, orient="index").sort_index()
-        ev_soc_df = ev_soc_df.reindex(
-            range(len(planning_horizon) + 1), fill_value=0.0
-        )
-        ev_soc_df.index = soc_index
-
-        cluster_power_series = pd.Series(
-            {ts_index[t]: p_cc_day_ahead[t] for t in range(len(planning_horizon))},
-            dtype=float,
-        )
-
-        cluster_day_ahead_power_ts[cc_id] = cluster_power_series
-        cluster_day_ahead_ev_power_ts[cc_id] = ev_power_df
-        cluster_day_ahead_ev_soc_ts[cc_id] = ev_soc_df
-        day_ahead_summary_records.extend(
-            _build_day_ahead_ev_summary(
-                ev_power_df=ev_power_df,
-                ev_soc_df=ev_soc_df,
-                cluster_id=cc_id,
-                cluster_inputs=cluster_inputs,
-                price_series=market_price_ts,
-                step_hours=step_hours,
-                planning_start=planning_start,
-                time_step=time_step,
-            )
-        )
-
+    # Finalize Stage-1 outputs and export/plot as requested
     cluster_capability_summary = mcsystem.get_capability_summary()
     cluster_capability_ts = mcsystem.get_capability_timeseries()
     connected_evs_ts = mcsystem.get_connected_evs_timeseries()
