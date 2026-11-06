@@ -7,8 +7,15 @@ focus on orchestration and optimization.
 """
 
 import os
+from datetime import datetime
 
 import pandas as pd
+from database.db_models import ClusterForecast, ChargingSchedule
+from database.db_transactions import (
+    insert_cluster_forecast,
+    insert_cluster_forecast_batch,
+    insert_charging_schedule_batch
+)
 
 
 def print_capability_summary(cluster_capability_summary: dict[str, dict[str, float]]) -> None:
@@ -243,6 +250,9 @@ def export_day_ahead_schedule_results(
     print(f"Stage-1 day-ahead schedule written to: {output_path}")
 
 
+
+
+
 def export_stage2_results(
     command_status: pd.DataFrame,
     cluster_command_band_ts: dict[str, pd.DataFrame],
@@ -359,3 +369,91 @@ def export_stage2_results(
                 )
 
     print(f"Stage-2 scheduling results written to: {output_path}")
+
+
+def export_capability_to_database(
+    cluster_capability_ts: dict[str, pd.DataFrame],
+    connected_evs_ts: dict[str, pd.Series] | None,
+    cluster_power_ts: dict[str, pd.Series] | None,
+    enabled: bool = False,
+) -> None:
+    """Persist Stage-1 capability time-series to database.
+
+    Parameters
+    ----------
+    cluster_capability_ts : dict[str, pd.DataFrame]
+        Per-cluster capability bands with `downward_capability_kW` and
+        `upward_capability_kW` columns.
+    connected_evs_ts : dict[str, pd.Series] | None
+        Optional connected-EV timeseries per cluster.
+    cluster_power_ts : dict[str, pd.Series] | None
+        Optional cluster power timeseries (day-ahead schedule).
+    enabled : bool
+        If `False`, function returns immediately.
+
+    Returns
+    -------
+    None
+
+    Example
+    -------
+    >>> export_capability_to_database(
+    ...     cluster_capability_ts,
+    ...     connected_evs_ts,
+    ...     cluster_power_ts,
+    ...     enabled=True,
+    ... )
+    """
+    if not enabled:
+        print("Database export skipped.")
+        return
+
+    batch_records = []
+    for cc_id, df in cluster_capability_ts.items():
+        for ts, row in df.iterrows():
+            forecast = ClusterForecast(
+                cluster_id=int(cc_id),
+                timestamp=ts.isoformat() if isinstance(ts, datetime) else ts,
+                downward_capability_kW=float(row.get("downward_capability_kW", 0)),
+                upward_capability_kW=float(row.get("upward_capability_kW", 0)),
+                connected_evs=int(
+                    connected_evs_ts.get(cc_id, pd.Series()).get(ts, 0)
+                    if connected_evs_ts else 0
+                ),
+                cluster_power_kW=float(
+                    cluster_power_ts.get(cc_id, pd.Series()).get(ts, 0)
+                    if cluster_power_ts else 0
+                ),
+            )
+            batch_records.append(forecast)
+
+        if not batch_records:
+            print("No capability data to write to database.")
+            return
+
+        insert_cluster_forecast_batch(batch_records)
+
+
+def export_day_ahead_schedule_to_database(
+    ev_summary: pd.DataFrame,
+) -> None:
+    batch_records = []
+    for _, row in ev_summary.iterrows():
+        schedule = ChargingSchedule(
+            vehicle_id=row["vehicle_id"],
+            cluster_id=row["cluster_id"],
+            arrival_time_ts=row["arrival_time"],
+            departure_time_ts=row["departure_time"],
+            initial_soc=row["initial_soc"],
+            target_soc=row["target_soc"],
+            scheduled_departure_soc=row["scheduled_departure_soc"],
+            charged_energy_kWh=row["charged_energy_kWh"],
+            total_charging_cost_eur=row["total_charging_cost_eur"],
+        )
+        batch_records.append(schedule)
+
+    if not batch_records:
+        print("No charging schedule data to write to database.")
+        return
+
+    insert_charging_schedule_batch(batch_records)

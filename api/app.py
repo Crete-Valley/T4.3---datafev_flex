@@ -24,7 +24,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Dict, List
 from uuid import uuid4
 
@@ -86,6 +86,44 @@ stage1_cache = TTLObjectCache(
     ttl_seconds=STAGE1_CACHE_TTL_SECONDS,
     max_items=STAGE1_CACHE_MAX_ITEMS,
 )
+latest_planning_data: dict[str, object] | None = None
+
+
+def _serialize_forecast_artifacts(artifacts) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Convert workflow artifacts into JSON-compatible API records."""
+    cluster_forecasts: list[dict[str, object]] = []
+    capability_ts = getattr(artifacts, "cluster_capability_ts", None)
+    connected_ts = getattr(artifacts, "connected_evs_ts", None) or {}
+    power_ts = getattr(artifacts, "cluster_day_ahead_power_ts", None) or {}
+
+    if capability_ts is not None:
+        for cluster_id, frame in capability_ts.items():
+            connected = connected_ts.get(cluster_id, pd.Series(dtype=float))
+            power = power_ts.get(cluster_id, pd.Series(dtype=float))
+            for timestamp, row in frame.iterrows():
+                cluster_forecasts.append(
+                    {
+                        "cluster_id": int(cluster_id),
+                        "timestamp": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp),
+                        "downward_capability_kW": float(row.get("downward_capability_kW", 0.0)),
+                        "upward_capability_kW": float(row.get("upward_capability_kW", 0.0)),
+                        "connected_evs": int(connected.get(timestamp, 0)),
+                        "cluster_power_kW": float(power.get(timestamp, 0.0)),
+                    }
+                )
+
+    schedules: list[dict[str, object]] = []
+    schedule_df = getattr(artifacts, "day_ahead_ev_summary", None)
+    if schedule_df is not None and not schedule_df.empty:
+        for record in schedule_df.to_dict(orient="records"):
+            for key, value in record.items():
+                if hasattr(value, "isoformat"):
+                    record[key] = value.isoformat()
+                elif hasattr(value, "item"):
+                    record[key] = value.item()
+            schedules.append(record)
+
+    return cluster_forecasts, schedules
 
 
 class CommandPoint(BaseModel):
@@ -128,6 +166,14 @@ class FlexPotentialEstimationOptions(BaseModel):
         )
 
 
+class PlanningDataRequest(BaseModel):
+    """JSON body schema for planning metadata ingestion."""
+
+    planning_start: datetime
+    planning_end: datetime
+    time_step_minutes: int = Field(..., gt=0)
+
+
 class FlexAwareSmartChargeSchedulingRequest(BaseModel):
     """JSON body schema for Stage-2 endpoint."""
 
@@ -155,6 +201,55 @@ def readyz() -> dict[str, str | int]:
         "status": "ok",
         "stage1_cache_size": stage1_cache.size(),
         "default_solver_backend": DEFAULT_SOLVER_BACKEND,
+    }
+
+
+def _fetch_cluster_and_fleet_from_db() -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+    """Fetch clusters and fleet from the database for forecast computation."""
+    from utils.input_parser import parse_database_input
+
+    return parse_database_input()
+
+
+@app.post("/v1/compute_forecasts")
+def compute_forecasts(payload: PlanningDataRequest) -> dict[str, object]:
+    """Compute cluster forecasts from DB-backed input data."""
+    global latest_planning_data
+
+    planning_start = payload.planning_start
+    planning_end = payload.planning_end
+    time_step_minutes = int(payload.time_step_minutes)
+
+    planning_payload = {
+        "planning_start": planning_start.isoformat() if hasattr(planning_start, "isoformat") else str(planning_start),
+        "planning_end": planning_end.isoformat() if hasattr(planning_end, "isoformat") else str(planning_end),
+        "time_step_minutes": time_step_minutes,
+    }
+    latest_planning_data = planning_payload
+
+    artifacts = run_flex_potential_estimation(
+        input_file_path="nonexistent.xlsx",  # Placeholder path; actual file is not needed for DB-backed run
+        planning_start=planning_start,
+        planning_end=planning_end,
+        time_step=timedelta(minutes=time_step_minutes),
+        solver_backend=DEFAULT_SOLVER_BACKEND,
+        output_dir=None,  # No output directory needed for DB-backed run
+        capability_export_enabled=True,
+        capability_export_format="xlsx",
+        generate_plots=False,
+        run_kpi_analysis_enabled=False,
+        db_input_enabled=True,
+        db_export_enabled=True,
+    )
+
+    cluster_forecasts, charging_schedules = _serialize_forecast_artifacts(artifacts)
+
+    return {
+        "status": "computed",
+        **planning_payload,
+        "db_export_enabled": True,
+        "cluster_forecasts": cluster_forecasts,
+        "charging_schedules": charging_schedules,
     }
 
 
