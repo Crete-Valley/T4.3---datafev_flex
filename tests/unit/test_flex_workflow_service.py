@@ -47,6 +47,7 @@ def _make_stage1_artifacts() -> FlexPotentialEstimationArtifacts:
     time_step = timedelta(minutes=15)
     planning_horizon = [planning_start, planning_start + time_step]
     idx = pd.DatetimeIndex(planning_horizon)
+    soc_idx = list(idx) + [planning_end]
     capability_df = pd.DataFrame(
         {
             "downward_capability_kW": [5.0, 5.0],
@@ -70,6 +71,20 @@ def _make_stage1_artifacts() -> FlexPotentialEstimationArtifacts:
         cluster_capability_summary={"1": {"downward_capability_kWh": 1.0, "upward_capability_kWh": 1.0}},
         cluster_capability_ts={"1": capability_df},
         connected_evs_ts={"1": pd.Series([1, 1], index=idx)},
+        market_price_ts=pd.Series([0.1, 0.2], index=idx, dtype=float),
+        cluster_day_ahead_power_ts={"1": pd.Series([1.0, 0.5], index=idx, dtype=float)},
+        cluster_day_ahead_ev_power_ts={"1": pd.DataFrame({"EV1": [1.0, 0.5]}, index=idx)},
+        cluster_day_ahead_ev_soc_ts={"1": pd.DataFrame({"EV1": [0.5, 0.55, 0.6]}, index=soc_idx)},
+        day_ahead_ev_summary=pd.DataFrame(
+            [
+                {
+                    "vehicle_id": "EV1",
+                    "cluster_id": "1",
+                    "charged_energy_kWh": 0.375,
+                    "total_charging_cost_eur": 0.0875,
+                }
+            ]
+        ),
     )
 
 
@@ -106,27 +121,44 @@ def test_run_flex_potential_estimation_reads_planning_sheet(monkeypatch, tmp_pat
 
     monkeypatch.setattr("services.flex_workflow.print_capability_summary", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("services.flex_workflow.export_capability_timeseries", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("services.flex_workflow.export_day_ahead_schedule_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("services.flex_workflow.plot_cluster_capability_bands", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("services.flex_workflow.plot_aggregate_capability", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("services.flex_workflow.run_kpi_analysis", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
+        "services.flex_workflow.parse_day_ahead_prices_sheet",
+        lambda **_kwargs: pd.Series(
+            [0.1, 0.2],
+            index=pd.DatetimeIndex([planning_start, planning_start + time_step]),
+            dtype=float,
+        ),
+    )
+    monkeypatch.setattr(
         "services.flex_workflow._build_cluster_milp_inputs",
         lambda **kwargs: {
-            "ev_ids": [],
-            "bcap": {},
-            "inisoc": {},
-            "arrtime": {},
-            "tarsoc": {},
-            "minsoc": {},
-            "maxsoc": {},
-            "ch_eff": {},
-            "ds_eff": {},
-            "pmax_pos": {},
-            "pmax_neg": {},
-            "deptime": {},
-            "use_tarsoc": {},
-            "use_exact_tarsoc": {},
+            "ev_ids": ["EV1"],
+            "bcap": {"EV1": 50.0},
+            "inisoc": {"EV1": 0.5},
+            "arrtime": {"EV1": 0},
+            "tarsoc": {"EV1": 0.8},
+            "minsoc": {"EV1": 0.2},
+            "maxsoc": {"EV1": 1.0},
+            "ch_eff": {"EV1": 0.95},
+            "ds_eff": {"EV1": 0.95},
+            "pmax_pos": {"EV1": 7.2},
+            "pmax_neg": {"EV1": 0.0},
+            "deptime": {"EV1": 2},
+            "use_tarsoc": {"EV1": 1},
+            "use_exact_tarsoc": {"EV1": 0},
         },
+    )
+    monkeypatch.setattr(
+        "services.flex_workflow.compute_day_ahead_smart_charging_schedule",
+        lambda **kwargs: (
+            {0: {"EV1": 1.0}, 1: {"EV1": 0.5}},
+            {0: {"EV1": 0.5}, 1: {"EV1": 0.55}, 2: {"EV1": 0.6}},
+            {0: 1.0, 1: 0.5},
+        ),
     )
 
     artifacts = run_flex_potential_estimation(
@@ -143,6 +175,8 @@ def test_run_flex_potential_estimation_reads_planning_sheet(monkeypatch, tmp_pat
     assert list(artifacts.cluster_capability_ts.keys()) == ["1"]
     assert artifacts.cluster_capability_ts["1"]["downward_capability_kW"].tolist() == [4.0, 2.0]
     assert artifacts.cluster_capability_ts["1"]["upward_capability_kW"].tolist() == [1.0, 3.0]
+    assert artifacts.cluster_day_ahead_power_ts["1"].tolist() == [1.0, 0.5]
+    assert artifacts.day_ahead_ev_summary.loc[0, "vehicle_id"] == "EV1"
 
 
 def test_run_flex_aware_smart_charge_scheduling_marks_infeasible_cluster(monkeypatch):
@@ -298,3 +332,79 @@ def test_run_flex_aware_smart_charge_scheduling_best_effort_reports_tracking(mon
     row = out.command_status.loc[out.command_status["cluster_id"] == "1"].iloc[0]
     assert row["status"] == "accepted"
     assert row["reason"] == "BEST_EFFORT_DEVIATION"
+
+
+def test_run_flex_aware_smart_charge_scheduling_passes_market_prices(monkeypatch):
+    artifacts = _make_stage1_artifacts()
+    captured = {}
+
+    monkeypatch.setattr(
+        "services.flex_workflow.validate_stage2_commands",
+        lambda commands, envelopes, **_kwargs: (
+            {
+                cc_id: pd.DataFrame(
+                    {
+                        "p_min_kw": series.astype(float),
+                        "p_max_kw": series.astype(float),
+                        "p_set_kw": series.astype(float),
+                    },
+                    index=series.index,
+                )
+                for cc_id, series in commands.items()
+            },
+            pd.DataFrame(
+                [
+                    {
+                        "cluster_id": "1",
+                        "status": "accepted",
+                        "reason": "",
+                        "detail": "ok",
+                    }
+                ]
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "services.flex_workflow._build_cluster_milp_inputs",
+        lambda **kwargs: {
+            "bcap": {"EV1": 50.0},
+            "inisoc": {"EV1": 0.5},
+            "arrtime": {"EV1": 0},
+            "tarsoc": {"EV1": 0.8},
+            "minsoc": {"EV1": 0.2},
+            "maxsoc": {"EV1": 1.0},
+            "ch_eff": {"EV1": 0.95},
+            "ds_eff": {"EV1": 0.95},
+            "pmax_pos": {"EV1": 7.2},
+            "pmax_neg": {"EV1": 3.0},
+            "deptime": {"EV1": 2},
+            "use_tarsoc": {"EV1": 1},
+            "use_exact_tarsoc": {"EV1": 0},
+        },
+    )
+
+    def _capture_prices(**kwargs):
+        captured["prices"] = kwargs["prices"]
+        return (
+            {0: {"EV1": 0.0}, 1: {"EV1": 0.0}},
+            {0: {"EV1": 0.5}, 1: {"EV1": 0.5}, 2: {"EV1": 0.5}},
+            {0: 0.0, 1: 0.0},
+        )
+
+    monkeypatch.setattr(
+        "services.flex_workflow.compute_flex_aware_schedule",
+        _capture_prices,
+    )
+    monkeypatch.setattr("services.flex_workflow.export_stage2_results", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("services.flex_workflow.plot_stage2_ev_soc_schedules", lambda *_args, **_kwargs: None)
+
+    idx = artifacts.cluster_capability_ts["1"].index
+    commands = {"1": pd.Series([0.0, 0.0], index=idx, dtype=float)}
+    run_flex_aware_smart_charge_scheduling(
+        artifacts=artifacts,
+        commands_by_cluster=commands,
+        export_enabled=False,
+        generate_soc_plots=False,
+    )
+
+    assert captured["prices"] == {0: 0.1, 1: 0.2}

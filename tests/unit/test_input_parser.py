@@ -3,6 +3,7 @@ import pytest
 from pandas.testing import assert_frame_equal
 
 from utils.input_parser import (
+    parse_day_ahead_prices_sheet,
     parse_planning_sheet,
     parse_stage2_setpoints_sheet,
     parse_xlsx_input,
@@ -208,6 +209,66 @@ def test_parse_planning_sheet_raises_without_required_columns(excel_builder):
 
     with pytest.raises(ValueError, match="Planning"):
         parse_planning_sheet(str(file_path))
+
+
+def test_parse_day_ahead_prices_sheet_aligns_to_planning_horizon(excel_builder):
+    prices_df = pd.DataFrame(
+        [
+            {"timestamp": "2024-01-01 08:00", "price_eur_per_kwh": 0.10},
+            {"timestamp": "2024-01-01 08:15", "price_eur_per_kwh": 0.20},
+            {"timestamp": "2024-01-01 08:30", "price_eur_per_kwh": 0.30},
+        ]
+    )
+    file_path = excel_builder({"DayAheadMarketPrices": prices_df})
+
+    parsed = parse_day_ahead_prices_sheet(
+        str(file_path),
+        planning_timestamps=pd.date_range("2024-01-01 08:00", periods=2, freq="15min"),
+    )
+
+    assert parsed.index.tolist() == [
+        pd.Timestamp("2024-01-01 08:00"),
+        pd.Timestamp("2024-01-01 08:15"),
+    ]
+    assert parsed.tolist() == pytest.approx([0.10, 0.20])
+
+
+def test_parse_day_ahead_prices_sheet_raises_without_required_sheet(excel_builder):
+    prices_df = pd.DataFrame(
+        [
+            {"timestamp": "2024-01-01 08:00", "price_eur_per_kwh": 0.10},
+        ]
+    )
+    file_path = excel_builder({"MarketPrices": prices_df})
+
+    with pytest.raises(ValueError, match="DayAheadMarketPrices"):
+        parse_day_ahead_prices_sheet(str(file_path))
+
+
+def test_parse_day_ahead_prices_sheet_raises_without_required_column(excel_builder):
+    prices_df = pd.DataFrame(
+        [
+            {"timestamp": "2024-01-01 08:00", "price": 0.10},
+            {"timestamp": "2024-01-01 08:15", "price": 0.20},
+        ]
+    )
+    file_path = excel_builder({"DayAheadMarketPrices": prices_df})
+
+    with pytest.raises(ValueError, match="price_eur_per_kwh"):
+        parse_day_ahead_prices_sheet(str(file_path))
+
+
+def test_parse_day_ahead_prices_sheet_raises_for_horizon_gap(excel_builder):
+    prices_df = pd.DataFrame(
+        [{"timestamp": "2024-01-01 08:00", "price_eur_per_kwh": 0.10}]
+    )
+    file_path = excel_builder({"DayAheadMarketPrices": prices_df})
+
+    with pytest.raises(ValueError, match="Missing timestamp"):
+        parse_day_ahead_prices_sheet(
+            str(file_path),
+            planning_timestamps=pd.date_range("2024-01-01 08:00", periods=2, freq="15min"),
+        )
 
 
 def test_parse_stage2_setpoints_sheet_returns_cluster_series(excel_builder):

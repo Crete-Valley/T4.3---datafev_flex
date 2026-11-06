@@ -81,6 +81,90 @@ def parse_planning_sheet(file_path: str) -> dict:
     }
 
 
+def parse_day_ahead_prices_sheet(
+    file_path: str,
+    planning_timestamps: list | pd.DatetimeIndex | None = None,
+    sheet_name: str = "DayAheadMarketPrices",
+) -> pd.Series:
+    """Parse day-ahead market prices from workbook.
+
+    Purpose
+    -------
+    Normalize workbook price input from the canonical `DayAheadMarketPrices`
+    sheet into a timestamp-indexed series expressed in EUR/kWh.
+
+    Parameters
+    ----------
+    file_path : str
+        Workbook path.
+    planning_timestamps : list | pd.DatetimeIndex | None
+        Expected planning timestamps. When provided, the parsed price series is
+        aligned to this horizon and must cover every timestamp.
+    sheet_name : str
+        Required workbook sheet name. Defaults to `DayAheadMarketPrices`.
+
+    Returns
+    -------
+    pd.Series
+        Timestamp-indexed price profile in EUR/kWh.
+
+    Raises
+    ------
+    ValueError
+        If no supported price column exists, timestamps are duplicated, or the
+        series does not cover the planning horizon.
+    """
+    xls = pd.ExcelFile(file_path)
+    if sheet_name not in xls.sheet_names:
+        raise ValueError(
+            f"Input file must contain a '{sheet_name}' sheet."
+        )
+
+    prices_df = xls.parse(sheet_name)
+    if prices_df.empty:
+        raise ValueError(f"'{sheet_name}' sheet must contain at least one data row.")
+    if "timestamp" not in prices_df.columns:
+        raise ValueError(f"'{sheet_name}' sheet must include a 'timestamp' column.")
+    if "price_eur_per_kwh" not in prices_df.columns:
+        raise ValueError(
+            f"'{sheet_name}' sheet must include a 'price_eur_per_kwh' column."
+        )
+
+    price_series = pd.to_numeric(
+        prices_df["price_eur_per_kwh"], errors="raise"
+    ).astype(float)
+
+    timestamps = pd.to_datetime(prices_df["timestamp"])
+    parsed = pd.Series(price_series.to_numpy(dtype=float), index=timestamps, dtype=float)
+    parsed = parsed.sort_index()
+    parsed.index.name = "timestamp"
+    parsed.name = "price_eur_per_kwh"
+
+    dup_mask = parsed.index.duplicated(keep=False)
+    if dup_mask.any():
+        duplicate_ts = parsed.index[dup_mask][0]
+        raise ValueError(
+            f"Duplicate day-ahead price row detected for timestamp={duplicate_ts}."
+        )
+
+    if planning_timestamps is None:
+        return parsed
+
+    expected_index = pd.DatetimeIndex(planning_timestamps)
+    aligned = parsed.reindex(expected_index)
+    missing_ts = aligned[aligned.isna()].index
+    if len(missing_ts) > 0:
+        first_missing = missing_ts[0]
+        raise ValueError(
+            "Day-ahead price data does not fully cover the planning horizon. "
+            f"Missing timestamp: {first_missing}."
+        )
+
+    aligned.index.name = "timestamp"
+    aligned.name = "price_eur_per_kwh"
+    return aligned.astype(float)
+
+
 def parse_stage2_setpoints_sheet(
     file_path: str,
     sheet_name: str = "Setpoints",

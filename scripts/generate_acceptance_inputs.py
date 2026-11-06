@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Generate Stage-1/Stage-2 acceptance input matrix under inputs/acceptance_cases."""
+"""Generate deterministic Stage-1/Stage-2 acceptance fixtures.
+
+The Stage-1 workbooks mirror the current canonical input schema:
+- `Planning`
+- `Fleet`
+- `Clusters`
+- `DayAheadMarketPrices` with `timestamp` and `price_eur_per_kwh`
+
+The generated Stage-2 workbooks exercise both absolute-setpoint and flex-band
+validation paths against those Stage-1 fixtures.
+"""
 
 from __future__ import annotations
 
@@ -24,9 +34,14 @@ def _write_workbook(file_path: Path, sheets: dict[str, pd.DataFrame]) -> None:
 
 
 def _build_stage1_cases() -> dict[str, dict[str, pd.DataFrame]]:
+    """Build Stage-1 workbooks aligned with the current sample input schema."""
     planning = pd.read_excel(SAMPLE_STAGE1_FILE, sheet_name="Planning")
     fleet = pd.read_excel(SAMPLE_STAGE1_FILE, sheet_name="Fleet")
     clusters = pd.read_excel(SAMPLE_STAGE1_FILE, sheet_name="Clusters")
+    day_ahead_prices = pd.read_excel(
+        SAMPLE_STAGE1_FILE,
+        sheet_name="DayAheadMarketPrices",
+    )
 
     cases: dict[str, dict[str, pd.DataFrame]] = {}
 
@@ -34,6 +49,7 @@ def _build_stage1_cases() -> dict[str, dict[str, pd.DataFrame]]:
         "Planning": planning.copy(),
         "Fleet": fleet.copy(),
         "Clusters": clusters.copy(),
+        "DayAheadMarketPrices": day_ahead_prices.copy(),
     }
 
     planning_short = planning.copy()
@@ -46,6 +62,9 @@ def _build_stage1_cases() -> dict[str, dict[str, pd.DataFrame]]:
         "Planning": planning_short,
         "Fleet": fleet_single_cluster,
         "Clusters": clusters_single_cluster,
+        "DayAheadMarketPrices": day_ahead_prices[
+            pd.to_datetime(day_ahead_prices["timestamp"]) < pd.to_datetime(planning_short.loc[0, "planning_end"])
+        ].copy(),
     }
 
     clusters_no_v2g = clusters.copy()
@@ -61,6 +80,7 @@ def _build_stage1_cases() -> dict[str, dict[str, pd.DataFrame]]:
         "Planning": planning.copy(),
         "Fleet": fleet_no_v2g,
         "Clusters": clusters_no_v2g,
+        "DayAheadMarketPrices": day_ahead_prices.copy(),
     }
 
     return cases
@@ -199,6 +219,7 @@ def _build_manifest_rows() -> list[dict[str, str]]:
 
 
 def generate_cases(output_dir: Path) -> None:
+    """Write the complete acceptance matrix under `output_dir`."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for filename, sheets in _build_stage1_cases().items():

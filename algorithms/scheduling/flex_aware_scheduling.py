@@ -33,6 +33,9 @@ from pyomo.opt import SolverStatus, TerminationCondition
 TRACKING_MODE_STRICT = "strict"
 TRACKING_MODE_BEST_EFFORT = "best_effort"
 SUPPORTED_TRACKING_MODES = {TRACKING_MODE_STRICT, TRACKING_MODE_BEST_EFFORT}
+BEST_EFFORT_OBJECTIVE_TRACKING = "tracking"
+BEST_EFFORT_OBJECTIVE_COST = "cost"
+BEST_EFFORT_DEVIATION_TOLERANCE = 1e-6
 
 
 def _normalize_tracking_mode(tracking_mode: str) -> str:
@@ -57,6 +60,7 @@ def _build_flex_aware_model(
     pmax_pos: Dict[str, float],
     pmax_neg: Dict[str, float],
     deptime: Dict[str, int],
+    prices: Dict[int, float] | None = None,
     setpoint: Dict[int, float] | None = None,
     p_min: Dict[int, float] | None = None,
     p_max: Dict[int, float] | None = None,
@@ -66,6 +70,8 @@ def _build_flex_aware_model(
     tracking_mode: str = TRACKING_MODE_STRICT,
     deviation_penalty_weight: float = 1.0,
     cycling_penalty_weight: float = 1e-6,
+    best_effort_objective: str = BEST_EFFORT_OBJECTIVE_TRACKING,
+    deviation_budget: float | None = None,
 ) -> ConcreteModel:
     """Build the Stage-2 MILP model for command tracking.
 
@@ -141,18 +147,21 @@ def _build_flex_aware_model(
     ... )
     """
     normalized_tracking_mode = _normalize_tracking_mode(tracking_mode)
+    opt_horizon_list = list(opt_horizon)
 
     if p_min is None or p_max is None:
         if setpoint is None:
             raise ValueError("Either setpoint or both p_min/p_max must be provided.")
         p_min = {int(t): float(v) for t, v in setpoint.items()}
         p_max = {int(t): float(v) for t, v in setpoint.items()}
+    if prices is None:
+        prices = {int(t): 0.0 for t in opt_horizon_list[:-1]}
 
     model = ConcreteModel(name="flex_aware_scheduling")
 
     model.V = Set(initialize=list(bcap.keys()))
-    model.T = Set(initialize=list(opt_horizon)[:-1])
-    model.Tp = Set(initialize=list(opt_horizon))
+    model.T = Set(initialize=opt_horizon_list[:-1])
+    model.Tp = Set(initialize=opt_horizon_list)
     model.deltaSec = opt_step
 
     if use_tarsoc is None:
@@ -164,6 +173,7 @@ def _build_flex_aware_model(
 
     model.p_min = Param(model.T, initialize=p_min)
     model.p_max = Param(model.T, initialize=p_max)
+    model.price = Param(model.T, initialize=prices)
     model.b_cap = Param(model.V, initialize=bcap)
     model.s_ini = Param(model.V, initialize=inisoc)
     model.t_arr = Param(model.V, initialize=arrtime)
@@ -282,8 +292,17 @@ def _build_flex_aware_model(
     model.dep_soc_ge = Constraint(model.V, rule=dep_soc_ge_rule)
     model.dep_soc_eq = Constraint(model.V, rule=dep_soc_eq_rule)
 
+    charging_cost_expr = sum(
+        model.price[t] * model.p_ev_pos[v, t] * model.deltaSec / 3600
+        for v in model.V
+        for t in model.T
+    )
     cycling_expr = sum(
         model.p_ev_pos[v, t] + model.p_ev_neg[v, t] for v in model.V for t in model.T
+    )
+    is_absolute_command = all(
+        abs(float(value(model.p_max[t])) - float(value(model.p_min[t]))) <= 1e-9
+        for t in model.T
     )
 
     if normalized_tracking_mode == TRACKING_MODE_STRICT:
@@ -293,8 +312,15 @@ def _build_flex_aware_model(
         model.track_upper_bound = Constraint(
             model.T, rule=lambda m, t: m.p_cc[t] <= m.p_max[t]
         )
-        # Secondary criterion to avoid unnecessary charge/discharge cycling.
-        model.obj = Objective(expr=cycling_expr, sense=minimize)
+        # With an absolute setpoint the aggregate power is fixed, so price
+        # cannot reshape timing and only cycling minimization remains useful.
+        if is_absolute_command:
+            model.obj = Objective(expr=cycling_expr, sense=minimize)
+        else:
+            model.obj = Objective(
+                expr=charging_cost_expr + cycling_penalty_weight * cycling_expr,
+                sense=minimize,
+            )
         return model
 
     model.dev_pos = Var(model.T, within=NonNegativeReals)
@@ -317,11 +343,21 @@ def _build_flex_aware_model(
             rule=lambda m, t: m.p_cc[t] - m.dev_neg[t] <= m.p_max[t],
         )
 
-    model.obj = Objective(
-        expr=deviation_penalty_weight * sum(model.dev_pos[t] + model.dev_neg[t] for t in model.T)
-        + cycling_penalty_weight * cycling_expr,
-        sense=minimize,
-    )
+    deviation_expr = sum(model.dev_pos[t] + model.dev_neg[t] for t in model.T)
+    if deviation_budget is not None:
+        model.deviation_budget = Constraint(expr=deviation_expr <= deviation_budget)
+
+    if best_effort_objective == BEST_EFFORT_OBJECTIVE_TRACKING:
+        model.obj = Objective(expr=deviation_expr, sense=minimize)
+    elif best_effort_objective == BEST_EFFORT_OBJECTIVE_COST:
+        model.obj = Objective(
+            expr=charging_cost_expr + cycling_penalty_weight * cycling_expr,
+            sense=minimize,
+        )
+    else:  # pragma: no cover - defensive validation
+        raise ValueError(
+            "Unsupported best_effort_objective. Use 'tracking' or 'cost'."
+        )
 
     return model
 
@@ -373,6 +409,38 @@ def _is_solver_optimal(results) -> bool:
     )
 
 
+def _solve_model(solver, model, *, solve_label: str) -> None:
+    """Run solver and raise a readable RuntimeError on failure."""
+    try:
+        results = solver.solve(model, tee=False)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        raise RuntimeError(f"{solve_label} failed: {exc}") from exc
+
+    if not _is_solver_optimal(results):
+        solver_data = getattr(results, "solver", None)
+        status = getattr(solver_data, "status", "unknown")
+        term = getattr(solver_data, "termination_condition", "unknown")
+        raise RuntimeError(
+            f"{solve_label} was not optimal (status={status}, termination={term})"
+        )
+
+
+def _evaluate_tracking_deviation(model) -> float:
+    """Compute realized tracking deviation from the solved cluster profile."""
+    if hasattr(model, "p_set"):
+        return float(
+            sum(abs(value(model.p_cc[t]) - value(model.p_set[t])) for t in model.T)
+        )
+
+    return float(
+        sum(
+            max(value(model.p_min[t]) - value(model.p_cc[t]), 0.0)
+            + max(value(model.p_cc[t]) - value(model.p_max[t]), 0.0)
+            for t in model.T
+        )
+    )
+
+
 def compute_flex_aware_schedule(
     solver,
     opt_step: int,
@@ -387,6 +455,7 @@ def compute_flex_aware_schedule(
     pmax_pos: Dict[str, float],
     pmax_neg: Dict[str, float],
     deptime: Dict[str, int],
+    prices: Dict[int, float] | None = None,
     setpoint: Dict[int, float] | None = None,
     p_min: Dict[int, float] | None = None,
     p_max: Dict[int, float] | None = None,
@@ -425,8 +494,13 @@ def compute_flex_aware_schedule(
     tracking_mode : str
         `strict` enforces hard command tracking; `best_effort` minimizes
         command mismatch while keeping EV/SOC constraints hard.
+        In `best_effort`, the solve is lexicographic:
+        1. minimize command deviation
+        2. among equally good deviation levels, minimize charging cost.
     deviation_penalty_weight, cycling_penalty_weight : float
-        Objective weights used in `best_effort` mode.
+        `deviation_penalty_weight` is retained for API compatibility.
+        `cycling_penalty_weight` is the secondary regularization applied in
+        the cost-minimizing phase.
 
     Returns
     -------
@@ -455,10 +529,12 @@ def compute_flex_aware_schedule(
     """
     if arrtime is None:
         arrtime = {v: 0 for v in bcap.keys()}
+    normalized_tracking_mode = _normalize_tracking_mode(tracking_mode)
 
-    model = _build_flex_aware_model(
+    common_kwargs = dict(
         opt_step=opt_step,
         opt_horizon=opt_horizon,
+        prices=prices,
         setpoint=setpoint,
         p_min=p_min,
         p_max=p_max,
@@ -475,23 +551,28 @@ def compute_flex_aware_schedule(
         use_tarsoc=use_tarsoc,
         use_exact_tarsoc=use_exact_tarsoc,
         arrtime=arrtime,
-        tracking_mode=tracking_mode,
+        tracking_mode=normalized_tracking_mode,
         deviation_penalty_weight=deviation_penalty_weight,
         cycling_penalty_weight=cycling_penalty_weight,
     )
 
-    try:
-        results = solver.solve(model, tee=False)
-    except Exception as exc:  # pragma: no cover - defensive guard
-        raise RuntimeError(f"Stage-2 solve failed: {exc}") from exc
-
-    if not _is_solver_optimal(results):
-        solver_data = getattr(results, "solver", None)
-        status = getattr(solver_data, "status", "unknown")
-        term = getattr(solver_data, "termination_condition", "unknown")
-        raise RuntimeError(
-            f"Stage-2 solve was not optimal (status={status}, termination={term})"
+    if normalized_tracking_mode == TRACKING_MODE_STRICT:
+        model = _build_flex_aware_model(**common_kwargs)
+        _solve_model(solver, model, solve_label="Stage-2 solve")
+    else:
+        deviation_model = _build_flex_aware_model(
+            **common_kwargs,
+            best_effort_objective=BEST_EFFORT_OBJECTIVE_TRACKING,
         )
+        _solve_model(solver, deviation_model, solve_label="Stage-2 phase-1 solve")
+        best_deviation = _evaluate_tracking_deviation(deviation_model)
+
+        model = _build_flex_aware_model(
+            **common_kwargs,
+            best_effort_objective=BEST_EFFORT_OBJECTIVE_COST,
+            deviation_budget=best_deviation + BEST_EFFORT_DEVIATION_TOLERANCE,
+        )
+        _solve_model(solver, model, solve_label="Stage-2 phase-2 solve")
 
     p_ev_res = {
         int(t): {

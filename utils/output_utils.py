@@ -47,6 +47,7 @@ def export_capability_timeseries(
     enabled: bool = False,
     export_format: str = "parquet",
     forecast_connected_evs_ts: dict[str, pd.Series] | None = None,
+    cluster_power_ts: dict[str, pd.Series] | None = None,
 ) -> None:
     """Persist Stage-1 capability time-series in the requested format.
 
@@ -62,6 +63,9 @@ def export_capability_timeseries(
         One of `csv`, `xlsx`, `parquet` (fallback/default).
     forecast_connected_evs_ts : dict[str, pd.Series] | None
         Optional connected-EV timeseries to be merged into export output.
+    cluster_power_ts : dict[str, pd.Series] | None
+        Optional Stage-1 day-ahead scheduled cluster charging profile to be
+        merged into export output.
 
     Returns
     -------
@@ -86,6 +90,9 @@ def export_capability_timeseries(
             if forecast_connected_evs_ts and cc_id in forecast_connected_evs_ts:
                 df_out["connected_evs"] = forecast_connected_evs_ts[cc_id]
                 desired_cols.append("connected_evs")
+            if cluster_power_ts and cc_id in cluster_power_ts:
+                df_out["cluster_power_kW"] = cluster_power_ts[cc_id]
+                desired_cols.append("cluster_power_kW")
             df_out = df_out.reindex(columns=desired_cols)
             csv_path = os.path.join(base_path, f"cluster_capability_{cc_id}.csv")
             df_out.to_csv(csv_path)
@@ -99,6 +106,9 @@ def export_capability_timeseries(
                 if forecast_connected_evs_ts and cc_id in forecast_connected_evs_ts:
                     df_out["connected_evs"] = forecast_connected_evs_ts[cc_id]
                     desired_cols.append("connected_evs")
+                if cluster_power_ts and cc_id in cluster_power_ts:
+                    df_out["cluster_power_kW"] = cluster_power_ts[cc_id]
+                    desired_cols.append("cluster_power_kW")
                 df_out = df_out.reindex(columns=desired_cols)
                 sheet_name = f"Cluster_{cc_id}"
                 df_out.to_excel(writer, sheet_name=sheet_name)
@@ -111,6 +121,9 @@ def export_capability_timeseries(
             if forecast_connected_evs_ts and cc_id in forecast_connected_evs_ts:
                 df_out["connected_evs"] = forecast_connected_evs_ts[cc_id]
                 desired_cols.append("connected_evs")
+            if cluster_power_ts and cc_id in cluster_power_ts:
+                df_out["cluster_power_kW"] = cluster_power_ts[cc_id]
+                desired_cols.append("cluster_power_kW")
             df_out = df_out.reindex(columns=desired_cols)
             pq_path = os.path.join(base_path, f"cluster_capability_{cc_id}.parquet")
             df_out.to_parquet(pq_path)
@@ -121,6 +134,113 @@ def _safe_sheet_name(prefix: str, cluster_id: str) -> str:
     """Build Excel-safe sheet names by truncating to 31 chars."""
     raw = f"{prefix}_{cluster_id}"
     return raw[:31]
+
+
+def _unique_sheet_name(base: str, used_names: set[str]) -> str:
+    """Return an Excel-safe unique sheet name."""
+    sanitized = str(base)
+    for ch in ('/', '\\', ':', '?', '*', '[', ']'):
+        sanitized = sanitized.replace(ch, "_")
+    candidate = sanitized[:31]
+    if candidate not in used_names:
+        used_names.add(candidate)
+        return candidate
+
+    for idx in range(1, 1000):
+        suffix = f"_{idx}"
+        candidate = f"{sanitized[:31 - len(suffix)]}{suffix}"
+        if candidate not in used_names:
+            used_names.add(candidate)
+            return candidate
+
+    raise ValueError(f"Unable to create unique sheet name for '{base}'.")
+
+
+def export_day_ahead_schedule_results(
+    market_price_ts: pd.Series,
+    cluster_power_ts: dict[str, pd.Series],
+    cluster_ev_power_ts: dict[str, pd.DataFrame],
+    cluster_ev_soc_ts: dict[str, pd.DataFrame],
+    ev_summary: pd.DataFrame,
+    base_path: str,
+    enabled: bool = False,
+    export_format: str = "xlsx",
+) -> None:
+    """Persist Stage-1 day-ahead charging schedules.
+
+    The primary XLSX export includes:
+    - one sheet per EV power trajectory (`<ev_id>_power`)
+    - one sheet per EV SoC trajectory (`<ev_id>_soc`)
+    - one sheet per cluster aggregate power trajectory
+    - market price input
+    - EV/cluster cost summary
+    """
+    if not enabled:
+        return
+
+    fmt = export_format.lower()
+    if fmt == "csv":
+        market_price_ts.rename("price_eur_per_kwh").to_frame().to_csv(
+            os.path.join(base_path, "day_ahead_market_prices.csv")
+        )
+        ev_summary.to_csv(
+            os.path.join(base_path, "day_ahead_total_charging_price.csv"),
+            index=False,
+        )
+        for cc_id, p_cc in cluster_power_ts.items():
+            p_cc.rename("cluster_power_kW").to_frame().to_csv(
+                os.path.join(base_path, f"day_ahead_cluster_{cc_id}_power.csv")
+            )
+        for cc_id, power_df in cluster_ev_power_ts.items():
+            for ev_id in power_df.columns:
+                power_df[[ev_id]].rename(columns={ev_id: "power_kW"}).to_csv(
+                    os.path.join(base_path, f"day_ahead_{cc_id}_{ev_id}_power.csv")
+                )
+        for cc_id, soc_df in cluster_ev_soc_ts.items():
+            for ev_id in soc_df.columns:
+                soc_df[[ev_id]].rename(columns={ev_id: "soc"}).to_csv(
+                    os.path.join(base_path, f"day_ahead_{cc_id}_{ev_id}_soc.csv")
+                )
+        print(f"Stage-1 day-ahead schedules written to CSV files under: {base_path}")
+        return
+
+    if fmt != "xlsx":
+        fmt = "xlsx"
+
+    output_path = os.path.join(base_path, "day_ahead_smart_charging_schedule.xlsx")
+    used_sheet_names: set[str] = set()
+    with pd.ExcelWriter(output_path) as writer:
+        market_price_ts.rename("price_eur_per_kwh").to_frame().to_excel(
+            writer,
+            sheet_name=_unique_sheet_name("market_prices", used_sheet_names),
+        )
+        ev_summary.to_excel(
+            writer,
+            sheet_name=_unique_sheet_name("total_charging_price", used_sheet_names),
+            index=False,
+        )
+
+        for cc_id, p_cc in cluster_power_ts.items():
+            p_cc.rename("cluster_power_kW").to_frame().to_excel(
+                writer,
+                sheet_name=_unique_sheet_name(f"cluster_{cc_id}_power", used_sheet_names),
+            )
+
+        for power_df in cluster_ev_power_ts.values():
+            for ev_id in power_df.columns:
+                power_df[[ev_id]].rename(columns={ev_id: "power_kW"}).to_excel(
+                    writer,
+                    sheet_name=_unique_sheet_name(f"{ev_id}_power", used_sheet_names),
+                )
+
+        for soc_df in cluster_ev_soc_ts.values():
+            for ev_id in soc_df.columns:
+                soc_df[[ev_id]].rename(columns={ev_id: "soc"}).to_excel(
+                    writer,
+                    sheet_name=_unique_sheet_name(f"{ev_id}_soc", used_sheet_names),
+                )
+
+    print(f"Stage-1 day-ahead schedule written to: {output_path}")
 
 
 def export_stage2_results(

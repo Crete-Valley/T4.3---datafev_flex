@@ -10,7 +10,7 @@ export default function EVFlexFlowchart() {
           <h1 className="text-4xl font-bold text-white mb-2">
             datafev_flex Service Flowchart
           </h1>
-          <p className="text-blue-200">Stage-1 + Stage-2 (Strict / Best-Effort) + Tracking Analytics</p>
+          <p className="text-blue-200">Stage-1 Capability + Day-Ahead Smart Charging + Stage-2 Tracking</p>
         </div>
 
         {/* Flowchart */}
@@ -25,11 +25,14 @@ export default function EVFlexFlowchart() {
             <div className="bg-white/10 rounded-lg p-4 backdrop-blur">
               <p className="text-white font-semibold mb-2">📊 Data Sources:</p>
               <ul className="text-white space-y-1 ml-4">
-                <li>• Forecasted Day-Ahead EV Fleet Profiles</li>
-                <li>• Charger Cluster Configuration</li>
+                <li>• `Planning`, `Fleet`, `Clusters`</li>
+                <li>• `DayAheadMarketPrices`</li>
+                <li>• 15-min `price_eur_per_kwh` series</li>
               </ul>
               <div className="mt-3 pt-3 border-t border-white/20">
-                <p className="text-emerald-100 font-mono text-sm">parse_xlsx_input() → EVFleet + MultiClusterSystem</p>
+                <p className="text-emerald-100 font-mono text-sm">
+                  parse_planning_sheet() + parse_xlsx_input() + parse_day_ahead_prices_sheet()
+                </p>
               </div>
             </div>
           </div>
@@ -40,27 +43,38 @@ export default function EVFlexFlowchart() {
             <div className="w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-purple-400"></div>
           </div>
 
-          {/* Stage 1: Flex Potential */}
+          {/* Stage 1: Flex Potential + Day-Ahead */}
           <div className="bg-gradient-to-r from-purple-600 to-indigo-600 rounded-xl p-6 shadow-2xl w-full max-w-3xl border-2 border-purple-300">
             <div className="flex items-center gap-3 mb-3">
               <TrendingUp className="w-8 h-8 text-white" />
-              <h2 className="text-2xl font-bold text-white">STAGE 1: FLEX POTENTIAL ESTIMATION</h2>
+              <h2 className="text-2xl font-bold text-white">STAGE 1: CAPABILITY + DAY-AHEAD SMART CHARGING</h2>
             </div>
             <div className="bg-white/10 rounded-lg p-4 backdrop-blur">
-              <p className="text-white font-semibold mb-3">🎯 MILP Optimization:</p>
-              <div className="grid grid-cols-2 gap-4">
+              <p className="text-white font-semibold mb-3">🎯 Stage-1 Optimization Stack:</p>
+              <div className="grid md:grid-cols-3 gap-4">
                 <div className="bg-purple-900/30 rounded p-3 border border-purple-400/30">
-                  <p className="text-purple-200 font-semibold mb-1">G2V Potential</p>
-                  <p className="text-white text-sm font-mono">calculate_G2V_potential_milp()</p>
+                  <p className="text-purple-200 font-semibold mb-1">Capability MILPs</p>
+                  <p className="text-white text-sm font-mono">compute_g2v_capability()</p>
+                  <p className="text-white text-sm font-mono">compute_v2g_capability()</p>
                 </div>
                 <div className="bg-indigo-900/30 rounded p-3 border border-indigo-400/30">
-                  <p className="text-indigo-200 font-semibold mb-1">V2G Potential</p>
-                  <p className="text-white text-sm font-mono">calculate_V2G_potential_milp()</p>
+                  <p className="text-indigo-200 font-semibold mb-1">Price-Driven Baseline</p>
+                  <p className="text-white text-sm font-mono">compute_day_ahead_smart_charging_schedule()</p>
+                </div>
+                <div className="bg-blue-900/30 rounded p-3 border border-blue-400/30">
+                  <p className="text-blue-200 font-semibold mb-1">Stage-1 Outputs</p>
+                  <ul className="text-white text-sm space-y-1">
+                    <li>• Capability bands</li>
+                    <li>• EV power / EV SoC</li>
+                    <li>• Cluster power / total cost</li>
+                  </ul>
                 </div>
               </div>
               <div className="mt-3 pt-3 border-t border-white/20">
                 <p className="text-purple-100 font-semibold">📈 Output:</p>
-                <p className="text-white text-sm">G2V & V2G Potential Curves (per timestep)</p>
+                <p className="text-white text-sm">
+                  `cluster_capability_timeseries.xlsx` + `day_ahead_smart_charging_schedule.xlsx`
+                </p>
               </div>
             </div>
           </div>
@@ -82,7 +96,7 @@ export default function EVFlexFlowchart() {
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
                   <span className="text-green-300 font-bold">→</span>
-                  <span className="text-white">Send: G2V & V2G Potentials</span>
+                  <span className="text-white">Send: `stage1_id` + Stage-1 capability outputs</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-blue-300 font-bold">←</span>
@@ -124,18 +138,18 @@ export default function EVFlexFlowchart() {
                     <li>• EV Arrival/Departure</li>
                     <li>• SoC Dynamics</li>
                     <li>• Min/Max SoC Limits</li>
-                    <li>• Target SoC (Hard/Soft)</li>
+                    <li>• Target SoC Policy</li>
                     <li>• Charger Capacity</li>
                     <li>• Flex Tracking</li>
                   </ul>
                 </div>
                 <div className="bg-blue-900/30 rounded p-3 border border-blue-400/30">
-                  <p className="text-blue-200 font-semibold mb-2">📊 Outputs:</p>
+                  <p className="text-blue-200 font-semibold mb-2">🎯 Objective:</p>
                   <ul className="text-white text-sm space-y-1">
-                    <li>• EV Power Schedule</li>
-                    <li>• EV SoC Schedule</li>
-                    <li>• Cluster Power Profile</li>
-                    <li>• Flex Tracking Stats</li>
+                    <li>• Reuse Stage-1 `DayAheadMarketPrices` timeline</li>
+                    <li>• `strict` + `flex_band`: command hard, then cheapest feasible charging</li>
+                    <li>• `strict` + `absolute_setpoint`: aggregate fixed, cycling tie-breaker</li>
+                    <li>• `best_effort`: minimum deviation first, then minimum charging cost</li>
                   </ul>
                 </div>
               </div>
@@ -167,7 +181,9 @@ export default function EVFlexFlowchart() {
                 <div className="bg-teal-900/30 rounded p-3 border border-teal-400/30">
                   <p className="text-teal-200 font-semibold mb-1">💾 Export Results:</p>
                   <ul className="text-white text-sm space-y-1">
-                    <li>• Excel/CSV Files</li>
+                    <li>• Stage-1 capability workbook (`cluster_power_kW` included)</li>
+                    <li>• Stage-1 day-ahead schedule workbook</li>
+                    <li>• Stage-2 Excel/CSV Files</li>
                     <li>• Visualization Plots (KPIs, SoC, Flex)</li>
                     <li>• Service Logs</li>
                   </ul>
@@ -177,7 +193,9 @@ export default function EVFlexFlowchart() {
           </div>
 
           <div className="flex flex-col items-center py-4">
-            <p className="text-emerald-200 mt-2 font-semibold">Service Ready: strict + best_effort scheduling with full traceability</p>
+            <p className="text-emerald-200 mt-2 font-semibold">
+              Service Ready: price-driven Stage-1 baseline + strict/best_effort Stage-2 scheduling
+            </p>
           </div>
 
         </div>

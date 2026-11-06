@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# End-to-end API acceptance runner.
+# It verifies:
+# - Stage-1 requests with canonical `DayAheadMarketPrices` inputs
+# - Stage-2 validation outcomes for absolute and flex-band commands
+# - best_effort command handling
+# - job-scoped artifact creation and one-time `stage1_id` consumption
+
 BASE_URL="${BASE_URL:-http://127.0.0.1:8000}"
 CASE_DIR="${CASE_DIR:-inputs/acceptance_cases}"
 SOLVER_BACKEND="${SOLVER_BACKEND:-glpk}"
@@ -330,8 +337,10 @@ run_output_artifact_check() {
   assert_stage2_payload "${HTTP_BODY}" ""
 
   local stage1_artifact="${OUTPUT_ROOT}/jobs/${sid}/flex_potential_estimation/cluster_capability_timeseries.xlsx"
+  local stage1_day_ahead_artifact="${OUTPUT_ROOT}/jobs/${sid}/flex_potential_estimation/day_ahead_smart_charging_schedule.xlsx"
   local stage2_artifact="${OUTPUT_ROOT}/jobs/${sid}/flex_aware_smart_charge_scheduling/stage2_flex_scheduling_results.xlsx"
   [[ -f "${stage1_artifact}" ]] || fail "missing artifact: ${stage1_artifact}"
+  [[ -f "${stage1_day_ahead_artifact}" ]] || fail "missing artifact: ${stage1_day_ahead_artifact}"
   [[ -f "${stage2_artifact}" ]] || fail "missing artifact: ${stage2_artifact}"
 }
 
