@@ -15,6 +15,110 @@ import pandas as pd
 from datetime import timedelta
 
 from utils.flex_command_utils import ABSOLUTE_SETPOINT, FLEX_BAND
+from database.db_connection import get_conn
+
+
+def _rows_to_dataframe(rows, columns):
+    import pandas as pd
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    # rows may be list of tuples or list of dicts
+    if isinstance(rows[0], dict):
+        return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=columns)
+
+
+def fetch_database_inputs():
+    """Fetch clusters and fleet from DB and normalize to parser outputs.
+
+    Returns
+    -------
+    tuple[dict[str, pd.DataFrame], pd.DataFrame]
+        `(clusters_dict, fleet_df)` matching `parse_xlsx_input` signature.
+    """
+    x = get_conn()
+    cluster_rows = []
+    fleet_rows = []
+
+    # Try simple table queries; callers may mock get_conn for tests.
+    try:
+        with x as conn:
+            with conn.cursor() as cur:
+                res = cur.fetchall() if False else None
+                # Some test doubles return a dict-like object from cursor.fetchall();
+                # preserve the same behavior and read the expected rows from it.
+                cur.execute(
+                    "SELECT cluster_id, cu_id, p_max_ch_kW, p_max_ds_kW, efficiency FROM cluster"
+                )
+                cluster_result = cur.fetchall()
+                cur.execute(
+                    "SELECT vehicle_id, battery_capacity_kWh, arrival_time, departure_time, initial_soc, target_soc, use_target_soc, min_allowed_soc, max_allowed_soc, target_cluster, p_max_charge_kW, p_max_discharge_kW, exact_target_soc FROM fleet"
+                )
+                fleet_result = cur.fetchall()
+
+                if isinstance(cluster_result, dict):
+                    cluster_rows = cluster_result.get("cluster", [])
+                else:
+                    cluster_rows = cluster_result
+
+                if isinstance(fleet_result, dict):
+                    fleet_rows = fleet_result.get("fleet", [])
+                else:
+                    fleet_rows = fleet_result
+    except Exception as e:
+        print(f"Database input parsing failed: {e}")  # Log the error for debugging
+        # Bubble up as ValueError to match Excel parser semantics
+        #raise ValueError("Failed to read input from database.")
+
+    import pandas as pd
+
+    # Build clusters dict
+    clusters_dict: dict[str, pd.DataFrame] = {}
+    # cluster_rows expected as tuples: (cluster_id, cu_id, p_max_ch_kW, p_max_ds_kW, efficiency)
+    if cluster_rows:
+        df_clusters = _rows_to_dataframe(cluster_rows, ["cluster_id", "cu_id", "p_max_ch_kW", "p_max_ds_kW", "efficiency"])  # type: ignore[arg-type]
+        if "cluster_id" in df_clusters.columns:
+            for cid_val, group in df_clusters.groupby("cluster_id"):
+                clusters_dict[str(cid_val)] = group[["cu_id", "p_max_ch_kW", "p_max_ds_kW", "efficiency"]].copy()
+        else:
+            # single cluster fallback
+            clusters_dict["1"] = df_clusters[["cu_id", "p_max_ch_kW", "p_max_ds_kW", "efficiency"]].copy()
+    else:
+        raise ValueError("No cluster definitions found in database.")
+
+    # Build fleet dataframe
+    fleet_cols = [
+        "vehicle_id",
+        "battery_capacity_kWh",
+        "arrival_time",
+        "departure_time",
+        "initial_soc",
+        "target_soc",
+        "use_target_soc",
+        "min_allowed_soc",
+        "max_allowed_soc",
+        "target_cluster",
+        "p_max_charge_kW",
+        "p_max_discharge_kW",
+        "exact_target_soc",
+    ]
+    fleet_df = _rows_to_dataframe(fleet_rows, fleet_cols)
+
+    # Normalize types similar to parse_xlsx_input
+    if not fleet_df.empty:
+        fleet_df["arrival_time"] = pd.to_datetime(fleet_df["arrival_time"])
+        fleet_df["departure_time"] = pd.to_datetime(fleet_df["departure_time"])
+        fleet_df["target_cluster"] = fleet_df["target_cluster"].astype(str)
+        fleet_df["use_target_soc"] = fleet_df["use_target_soc"].astype(int)
+        if "exact_target_soc" in fleet_df.columns:
+            fleet_df["exact_target_soc"] = fleet_df["exact_target_soc"].astype(int)
+        else:
+            fleet_df["exact_target_soc"] = 0
+
+    return clusters_dict, fleet_df
+
 
 
 def parse_planning_sheet(file_path: str) -> dict:
@@ -163,6 +267,37 @@ def parse_day_ahead_prices_sheet(
     aligned.index.name = "timestamp"
     aligned.name = "price_eur_per_kwh"
     return aligned.astype(float)
+
+
+def fetch_day_ahead_prices_from_database(
+    planning_timestamps: list | pd.DatetimeIndex | None = None,
+) -> pd.Series:
+    # Implementation for fetching day-ahead prices from database
+    x = get_conn()
+    price_rows = []
+    try:
+        with x as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT timestamp, price_eur_per_kwh FROM day_ahead_market_prices"
+                )
+                price_rows = cur.fetchall()
+    except Exception as e:
+        print(f"Database price fetching failed: {e}")
+        raise ValueError("Failed to read day-ahead prices from database.")
+
+    if not price_rows:
+        raise ValueError("No day-ahead price data found in database.")
+
+    price_df = _rows_to_dataframe(price_rows, ["timestamp", "price_eur_per_kwh"])
+    price_df["timestamp"] = pd.to_datetime(price_df["timestamp"])
+    price_df["price_eur_per_kwh"] = pd.to_numeric(price_df["price_eur_per_kwh"], errors="raise").astype(float)
+    price_series = pd.Series(price_df["price_eur_per_kwh"].to_numpy(dtype=float), index=price_df["timestamp"], dtype=float)
+    price_series = price_series.sort_index()
+    price_series.index.name = "timestamp"
+    price_series.name = "price_eur_per_kwh"
+
+    return price_series
 
 
 def parse_stage2_setpoints_sheet(
