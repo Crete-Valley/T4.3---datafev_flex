@@ -22,11 +22,6 @@ The diagram below visualizes an overview of the datafev_flex service running wit
 
 
 ### Startup 
-Switch branch
-```bash
-git checkout digital_twin_use_dbapi
-```
-
 Startup the datafev_flex service with database:
 
 ```bash
