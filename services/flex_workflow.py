@@ -798,7 +798,13 @@ def run_flex_potential_estimation(
 
     planning_horizon = build_planning_horizon(planning_start, planning_end, time_step)
 
-    stage1_output_dir = _resolve_stage1_output_dir(output_dir)
+    stage1_output_dir = "not_used"
+    if db_export_enabled: # use only DB, do not write output files
+        capability_export_enabled = False
+        generate_plots = False
+        run_kpi_analysis_enabled = False
+    else:
+        stage1_output_dir = _resolve_stage1_output_dir(output_dir)
 
     solver = SolverFactory(solver_backend)
     if db_input_enabled and clusters_dict is not None and fleet_df is not None:

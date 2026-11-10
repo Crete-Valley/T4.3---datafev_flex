@@ -13,9 +13,6 @@ services:
       STAGE1_CACHE_TTL_SECONDS: "900"
       STAGE1_CACHE_MAX_ITEMS: "128"
       DATABASE_URL: postgresql://dev:dev@postgres:5432/mydb
-    volumes:
-      - ./outputs:/app/outputs
-      - ./inputs:/app/inputs:ro
     restart: unless-stopped
     depends_on:
       - postgres
